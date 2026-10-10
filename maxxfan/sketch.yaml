@@ -1,0 +1,2 @@
+# arduino-cli picks these up for compile / upload: ESP32C3 Dev Module, USB CDC On Boot, Minimal SPIFFS (1.9MB APP with OTA)
+default_fqbn: esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=min_spiffs
