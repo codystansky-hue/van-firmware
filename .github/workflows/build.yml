@@ -1,5 +1,6 @@
-# Builds the firmware on every push. The .bin is attached to the run (Actions > the run > Artifacts) and, for a tag
-# like v3, to a GitHub release -- download it on the phone and upload it on http://maxxfan.local/setup.
+# Builds both firmwares on every push. The .bin files are attached to the run (Actions > the run > Artifacts:
+# maxxfan-firmware, hub-firmware) and, for a tag like v3, to a GitHub release -- download one on the phone and upload it on
+# the device's setup page (http://maxxfan.local/setup, http://van.local/setup).
 name: build
 
 on:
@@ -12,6 +13,7 @@ on:
 env:
   ESP32_CORE: "3.3.12"
   ESP32_INDEX: https://espressif.github.io/arduino-esp32/package_esp32_index.json
+  NIMBLE: "2.5.1"
 
 jobs:
   build:
@@ -23,26 +25,36 @@ jobs:
 
       - uses: arduino/setup-arduino-cli@v2
 
-      - name: Cache the ESP32 core
+      - name: Cache the ESP32 core and libraries
         uses: actions/cache@v6
         with:
           path: |
             ~/.arduino15
+            ~/Arduino/libraries
             !~/.arduino15/staging
-          key: arduino15-esp32-${{ env.ESP32_CORE }}
+          key: arduino15-esp32-${{ env.ESP32_CORE }}-nimble-${{ env.NIMBLE }}
 
-      - name: Install the ESP32 core
+      - name: Install the ESP32 core and NimBLE-Arduino
         run: |
           arduino-cli core update-index --additional-urls "$ESP32_INDEX"
           arduino-cli core install "esp32:esp32@$ESP32_CORE" --additional-urls "$ESP32_INDEX"
+          arduino-cli lib install "NimBLE-Arduino@$NIMBLE"
 
       - name: Build maxxfan
-        run: arduino-cli compile --warnings all --output-dir build/maxxfan maxxfan
+        run: arduino-cli compile --warnings all --libraries libraries --output-dir build/maxxfan maxxfan
+
+      - name: Build hub
+        run: arduino-cli compile --warnings all --libraries libraries --output-dir build/hub hub
 
       - uses: actions/upload-artifact@v7
         with:
           name: maxxfan-firmware
           path: build/maxxfan/maxxfan.ino.bin
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hub-firmware
+          path: build/hub/hub.ino.bin
 
       - name: Attach to the release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -50,4 +62,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp build/maxxfan/maxxfan.ino.bin "maxxfan-${GITHUB_REF_NAME}.bin"
-          gh release create "$GITHUB_REF_NAME" "maxxfan-${GITHUB_REF_NAME}.bin" --generate-notes
+          cp build/hub/hub.ino.bin "hub-${GITHUB_REF_NAME}.bin"
+          gh release create "$GITHUB_REF_NAME" "maxxfan-${GITHUB_REF_NAME}.bin" "hub-${GITHUB_REF_NAME}.bin" --generate-notes

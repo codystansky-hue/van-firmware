@@ -5,32 +5,32 @@
 // v3 (2026-10-09): fan wiring picked on the setup page (one firmware for every build stage); knob + direction switch read
 //   by the ESP so the knob and the phone both work, whichever was touched last wins; optional panel lid button; passwords
 //   kept on the ESP, not in git; a fan reversal no longer blocks the loop. M (speed pulses) moved G0 -> G10.
+// v3.1 (2026-10-11): the Wi-Fi, update and password code moved to libraries/vannet (shared with the hub). Same behaviour;
+//   the "restarting" page now says "The page comes back in 20 s".
 //
 // Arduino core "esp32" by Espressif 3.x (3.3.12). Board settings are in sketch.yaml: ESP32C3 Dev Module, USB CDC On Boot
-// Enabled, Partition Scheme "Minimal SPIFFS (1.9MB APP with OTA)". Wiring, flashing and use: README.md next to this file.
+// Enabled, Partition Scheme "Minimal SPIFFS (1.9MB APP with OTA)". Build with --libraries libraries (the repo's folder,
+// for vannet). Wiring, flashing and use: README.md next to this file.
 
 #include <WiFi.h>
 #include <WebServer.h>
-#include <ESPmDNS.h>
 #include <Preferences.h>
-#include <ArduinoOTA.h>
-#include <Update.h>
-#include <esp_ota_ops.h>
+#include <VanNet.h>
 
 // ------------------------------------------------------------------ configuration
-#define FW_VERSION "v3"
+#define FW_VERSION "v3.1"
 const char* FW_BUILD = FW_VERSION " " __DATE__ " " __TIME__;
 
-const char* AP_SSID  = "MaxxFan";     // the ESP's own hotspot (fallback when the van router is unreachable)
-const char* HOSTNAME = "maxxfan";     // http://maxxfan.local on the van router (mDNS)
-const char* OTA_USER = "maxxfan";     // setup page login; its password is also the PC-upload password
-// first-boot passwords only: change them on the setup page, which keeps them on the ESP (not in git)
-const char* DEFAULT_AP_PASS  = "maxxfan123";
-const char* DEFAULT_OTA_PASS = "maxxfan-ota";
-
-const uint32_t AP_FALLBACK_MS = 20000;            // router unreachable this long -> hotspot on
-const uint32_t AP_IDLE_OFF_MS = 60000;            // router up + nobody on the hotspot this long -> hotspot off
-const uint32_t TRIAL_MS = 10UL * 60 * 1000;       // new firmware must answer a web request within this or roll back
+void safeStop(const char* why);
+const vannet::Config NET = {
+  .hostname       = "maxxfan",        // http://maxxfan.local on the van router (mDNS)
+  .apSsid         = "MaxxFan",        // the ESP's own hotspot (fallback when the van router is unreachable)
+  .setupUser      = "maxxfan",        // setup page login; its password is also the PC-upload password
+  .defaultApPass  = "maxxfan123",     // first-boot passwords only: change them on the setup page, which keeps them on
+  .defaultOtaPass = "maxxfan-ota",    //   the ESP (not in git)
+  .prefsNs        = "maxxfan",
+  .safeStop       = safeStop,
+};
 
 // fan wiring, picked on the setup page (applied at restart)
 enum FanMode : uint8_t {
@@ -68,8 +68,7 @@ struct Settings {
   float    lastPos;      // 0 = closed .. 100 = open, -1 = unknown
   uint8_t  fanMode;      // FanMode
 } cfg;
-String staSsid, staPass;              // van router, set on the fan page ("" = hotspot only)
-String apPass, otaPass;               // set on the setup page
+// the van router and the passwords are in the same namespace, kept by vannet
 
 void loadSettings() {
   prefs.begin("maxxfan", false);
@@ -80,10 +79,6 @@ void loadSettings() {
   cfg.lastPos  = prefs.getFloat("pos", -1.0f);
   cfg.fanMode  = prefs.getUChar("fanmode", FAN_KNOB_DIRECT);
   if (cfg.fanMode > FAN_PHONE_KNOB) cfg.fanMode = FAN_KNOB_DIRECT;
-  staSsid      = prefs.getString("ssid", "");
-  staPass      = prefs.getString("wpass", "");
-  apPass       = prefs.getString("appass", DEFAULT_AP_PASS);
-  otaPass      = prefs.getString("otapass", DEFAULT_OTA_PASS);
 }
 void saveSettings() {
   prefs.putUInt("travel", cfg.travelMs);
@@ -257,78 +252,15 @@ void buttonLoop() {
   btnWas = down;
 }
 
-// ------------------------------------------------------------------ Wi-Fi: van router first, own hotspot as fallback
-// With a router saved on the page the ESP joins it and the phone stays on the router: http://maxxfan.local.
-// Router unreachable for 20 s -> the MaxxFan hotspot comes on (http://192.168.4.1); it goes off again once the router is
-// back and nobody has been on the hotspot for a minute. Retries are done here, not by the Wi-Fi driver, and wait while a
-// phone is on the hotspot: a join attempt scans every channel and would make the hotspot drop out under it.
-bool apOn = false, staUp = false;
-uint32_t staDownMs = 0, staTryMs = 0, apBusyMs = 0;
-
-void apStart() {
-  if (apOn) return;
-  WiFi.softAP(AP_SSID, apPass.c_str());
-  WiFi.setTxPower(WIFI_POWER_8_5dBm);   // SuperMini boards often fail to connect at full power
-  apOn = true; apBusyMs = millis();
-  Serial.printf("hotspot \"%s\" on: http://%s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
-}
-void apStop() {
-  if (!apOn) return;
-  WiFi.softAPdisconnect(true);
-  apOn = false;
-  Serial.println("hotspot off (router is up)");
-}
-void staJoin() {
-  staTryMs = millis();
-  WiFi.begin(staSsid.c_str(), staPass.c_str());
-}
-
-void wifiLoop() {
-  uint32_t now = millis();
-  if (!staSsid.length()) { apStart(); return; }          // no router saved: hotspot only
-  bool up = WiFi.status() == WL_CONNECTED;
-  if (up != staUp) {
-    staUp = up;
-    if (up) Serial.printf("joined \"%s\": http://%s.local = http://%s\n", staSsid.c_str(), HOSTNAME,
-                          WiFi.localIP().toString().c_str());
-    else { staDownMs = now; Serial.println("router link down"); }
-  }
-  bool phoneOnAp = apOn && WiFi.softAPgetStationNum() > 0;
-  if (phoneOnAp) apBusyMs = now;
-  if (up) { if (apOn && now - apBusyMs > AP_IDLE_OFF_MS) apStop(); return; }
-  if (!apOn && now - staDownMs > AP_FALLBACK_MS) apStart();
-  if (!phoneOnAp && now - staTryMs > (apOn ? 60000UL : 10000UL)) staJoin();
-}
-
-void wifiChanged() {                  // router saved or forgotten on the page
-  staUp = false; staDownMs = millis();
-  if (staSsid.length()) staJoin();    // a hotspot that is on stays on, so the page can show the result
-  else { WiFi.disconnect(); apStart(); }
-}
-
-// ------------------------------------------------------------------ firmware updates over Wi-Fi
-// Two ways in, both with the setup password: a PC on the same network (arduino-cli / espota, port 3232), or a .bin
-// uploaded on http://maxxfan.local/setup. Either one stops the lid and fan first: loop() is blocked while it runs.
-// New firmware runs on trial: it must answer a web request (the page, or GET /api/status) within 10 min. If it doesn't,
-// or it crashes / loses power before then, the ESP goes back to the previous firmware.
-extern "C" bool verifyRollbackLater() { return true; }   // the core must not confirm it at boot; fwTrialLoop() does
-bool fwTrial = false, webSeen = false;
-
+// ------------------------------------------------------------------ Wi-Fi and firmware updates: libraries/vannet
+// The phone stays on the van router: http://maxxfan.local; the MaxxFan hotspot is the fallback. Updates: a .bin uploaded
+// on http://maxxfan.local/setup or a PC on the same network (espota), both with the setup password, with automatic
+// rollback. Either one calls safeStop() first: loop() is blocked while it runs.
 void safeStop(const char* why) {      // before an update or a restart
   if (lidMove != LID_IDLE) { lidStop(why); delay(150); }
   lidOutputs(0, 0); brakeUntil = 0;   // coast
   if (fanEsp()) { fanSpeed = 0; fanApply(); }
   Serial.printf("%s: lid and fan stopped\n", why);
-}
-
-void fwTrialLoop() {
-  if (!fwTrial) return;
-  if (webSeen) { esp_ota_mark_app_valid_cancel_rollback(); fwTrial = false; Serial.println("new firmware confirmed"); }
-  else if (millis() > TRIAL_MS) {
-    Serial.println("new firmware never answered: going back to the previous one");
-    delay(100);
-    esp_ota_mark_app_invalid_rollback_and_reboot();
-  }
 }
 
 // ------------------------------------------------------------------ web pages
@@ -420,43 +352,21 @@ setup + updates (user maxxfan) <input class="w" type="password" name="ota_pass" 
 <small>8 to 63 characters. Kept on the ESP, through firmware updates.</small>
 <button>Save and restart</button></form></body></html>)HTML";
 
-String jsonEsc(const String& s) {
-  String o;
-  for (char ch : s) { if (ch == '"' || ch == '\\') o += '\\'; if ((uint8_t)ch >= 0x20) o += ch; }
-  return o;
-}
-
 void sendJson(const String& s) { server.send(200, "application/json", s); }
 
-bool setupAuth() {
-  if (server.authenticate(OTA_USER, otaPass.c_str())) return true;
-  server.requestAuthentication();
-  return false;
-}
-
-void sendRestarting(const String& msg) {
-  server.send(200, "text/html", "<!doctype html><meta name=viewport content='width=device-width'>"
-              "<meta http-equiv=refresh content='20;url=/'><body style='font-family:system-ui;font-size:20px;padding:16px'>"
-              + msg + " The fan page comes back in 20 s.");
-  delay(500);
-}
-
 void apiStatus() {
-  webSeen = true;
+  vannet::pageSeen();
   const char* st = lidMove == LID_OPENING ? "opening" : lidMove == LID_CLOSING ? "closing" : "stopped";
   const char* wait = (fanSpeed > 0 && fanOut == 0) ? (flipAt ? "reverse" : "lid") : "";
-  char buf[700];
+  char buf[500];
   snprintf(buf, sizeof(buf),
            "{\"state\":\"%s\",\"pos\":%.1f,\"travel\":%lu,\"over\":%lu,\"invert\":%s,"
            "\"fan_mode\":%u,\"fan_control\":%s,\"fan\":%d,\"fan_out\":%d,\"dir\":\"%s\",\"fan_src\":\"%s\",\"fan_wait\":\"%s\","
-           "\"m_hz\":%.1f,\"knob\":%d,\"knob_mv\":%d,"
-           "\"wifi_up\":%s,\"wifi_ip\":\"%s\",\"wifi_rssi\":%d,\"ap\":%s,\"ap_clients\":%d,\"fw\":\"%s\",\"wifi_ssid\":\"",
+           "\"m_hz\":%.1f,\"knob\":%d,\"knob_mv\":%d,\"fw\":\"%s\",",
            st, currentPos(), (unsigned long)cfg.travelMs, (unsigned long)cfg.overMs, cfg.invert ? "true" : "false",
            (unsigned)cfg.fanMode, fanEsp() ? "true" : "false", fanSpeed, fanOut, fanForward ? "fwd" : "rev",
-           fanFromKnob ? "knob" : "phone", wait, mHz, knobPct, (int)knobMv,
-           staUp ? "true" : "false", staUp ? WiFi.localIP().toString().c_str() : "", staUp ? WiFi.RSSI() : 0,
-           apOn ? "true" : "false", apOn ? WiFi.softAPgetStationNum() : 0, FW_BUILD);
-  sendJson(String(buf) + jsonEsc(staSsid) + "\"}");
+           fanFromKnob ? "knob" : "phone", wait, mHz, knobPct, (int)knobMv, FW_BUILD);
+  sendJson(String(buf) + vannet::statusFields() + "}");
 }
 
 void apiLid() {
@@ -486,43 +396,9 @@ void apiFan() {                       // speed 0-100, dir fwd | rev; a phone (or
   apiStatus();
 }
 
-void apiWifi() {                      // POST ssid + pass = save and join, forget = hotspot only
-  if (server.hasArg("forget")) { staSsid = ""; staPass = ""; }
-  else {
-    String ss = server.arg("ssid"), pw = server.arg("pass");
-    ss.trim();                        // the iPhone keyboard likes to add a trailing space
-    if (!ss.length() || ss.length() > 32 || (pw.length() && (pw.length() < 8 || pw.length() > 63))) {
-      server.send(400, "text/plain", "network name 1-32 characters, password 8-63 (empty only for an open network)");
-      return;
-    }
-    staSsid = ss; staPass = pw;
-  }
-  prefs.putString("ssid", staSsid);
-  prefs.putString("wpass", staPass);
-  Serial.printf("router: %s\n", staSsid.length() ? staSsid.c_str() : "(forgotten)");
-  wifiChanged();
-  apiStatus();
-}
-
-void apiScan() {                      // first call starts a scan, then {"busy":true} until {"nets":[...]}
-  int n = WiFi.scanComplete();
-  if (n == WIFI_SCAN_RUNNING) { sendJson("{\"busy\":true}"); return; }
-  if (n < 0) { WiFi.scanNetworks(true); sendJson("{\"busy\":true}"); return; }
-  String s = "{\"nets\":[";
-  int k = 0;
-  for (int i = 0; i < n; i++) {
-    String e = "\"" + jsonEsc(WiFi.SSID(i)) + "\"";
-    if (WiFi.SSID(i).length() == 0 || s.indexOf(e) >= 0) continue;   // hidden, or the same network on another access point
-    if (k++) s += ',';
-    s += e;
-  }
-  WiFi.scanDelete();
-  sendJson(s + "]}");
-}
-
 void setupPage() {
-  if (!setupAuth()) return;
-  webSeen = true;
+  if (!vannet::setupAuth()) return;
+  vannet::pageSeen();
   String p(SETUP_PAGE);
   p.replace("%FW%", FW_BUILD);
   for (int m = 0; m <= FAN_PHONE_KNOB; m++) p.replace("%M" + String(m) + "%", cfg.fanMode == m ? "checked" : "");
@@ -532,56 +408,18 @@ void setupPage() {
 }
 
 void apiSetup() {                     // POST fanmode and / or ap_pass, ota_pass (empty = keep); then restart
-  if (!setupAuth()) return;
-  String ap = server.arg("ap_pass"), op = server.arg("ota_pass");
-  if ((ap.length() && (ap.length() < 8 || ap.length() > 63)) || (op.length() && (op.length() < 8 || op.length() > 63))) {
-    server.send(400, "text/plain", "passwords: 8 to 63 characters");
-    return;
-  }
+  if (!vannet::setupAuth()) return;
+  String err = vannet::passwordError();
+  if (err.length()) { server.send(400, "text/plain", err); return; }
   if (server.hasArg("fanmode")) {
     int m = server.arg("fanmode").toInt();
     if (m < FAN_KNOB_DIRECT || m > FAN_PHONE_KNOB) { server.send(400, "text/plain", "fanmode 0, 1 or 2"); return; }
     prefs.putUChar("fanmode", (uint8_t)m);
     Serial.printf("fan mode -> %d\n", m);
   }
-  if (ap.length()) prefs.putString("appass", ap);
-  if (op.length()) prefs.putString("otapass", op);
-  sendRestarting(String("Saved, restarting.") + (ap.length() ? " The MaxxFan hotspot now uses the new password." : ""));
+  bool apChanged = vannet::savePasswords();
+  vannet::sendRestarting(String("Saved, restarting.") + (apChanged ? " The MaxxFan hotspot now uses the new password." : ""));
   safeStop("setup");
-  ESP.restart();
-}
-
-bool otaAuthOk = false;
-String otaErr;
-void webUpdateUpload() {
-  HTTPUpload& up = server.upload();
-  if (up.status == UPLOAD_FILE_START) {
-    otaErr = "";
-    otaAuthOk = server.authenticate(OTA_USER, otaPass.c_str());
-    if (!otaAuthOk) return;
-    safeStop("update");
-    Serial.printf("web update: %s\n", up.filename.c_str());
-    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) otaErr = Update.errorString();
-  } else if (!otaAuthOk || otaErr.length()) {
-    if (up.status == UPLOAD_FILE_ABORTED && Update.isRunning()) Update.abort();
-  } else if (up.status == UPLOAD_FILE_WRITE) {
-    if (Update.write(up.buf, up.currentSize) != up.currentSize) otaErr = Update.errorString();
-  } else if (up.status == UPLOAD_FILE_END) {
-    if (!Update.end(true)) otaErr = Update.errorString();
-  } else if (up.status == UPLOAD_FILE_ABORTED) {
-    Update.abort(); otaErr = "upload interrupted";
-  }
-}
-void webUpdateDone() {
-  if (!otaAuthOk) return server.requestAuthentication();
-  if (!otaErr.length() && !Update.isFinished()) otaErr = "no complete firmware file received";
-  if (otaErr.length()) {
-    if (Update.isRunning()) Update.abort();
-    Serial.printf("web update failed: %s\n", otaErr.c_str());
-    server.send(500, "text/plain", "Update failed: " + otaErr + "\nThe old firmware is still running.");
-    return;
-  }
-  sendRestarting("Update received, restarting.");
   ESP.restart();
 }
 
@@ -598,8 +436,9 @@ void serialLoop() {
                                       " | fw %s | router \"%s\" %s %s | hotspot %s\n",
                                       currentPos(), (unsigned long)cfg.travelMs, cfg.invert, (unsigned)cfg.fanMode, fanOut,
                                       zfForward ? "fwd" : "rev", fanFromKnob ? "knob" : "phone", knobPct, (int)knobMv,
-                                      FW_BUILD, staSsid.c_str(), staUp ? "up" : "down",
-                                      staUp ? WiFi.localIP().toString().c_str() : "", apOn ? "on 192.168.4.1" : "off");
+                                      FW_BUILD, vannet::routerSsid().c_str(), vannet::routerUp() ? "up" : "down",
+                                      vannet::routerUp() ? WiFi.localIP().toString().c_str() : "",
+                                      vannet::hotspotOn() ? "on 192.168.4.1" : "off");
   }
 }
 
@@ -633,48 +472,25 @@ void setup() {
   Serial.begin(115200);
   delay(300);
 
-  esp_ota_img_states_t ota;
-  fwTrial = esp_ota_get_state_partition(esp_ota_get_running_partition(), &ota) == ESP_OK && ota == ESP_OTA_IMG_PENDING_VERIFY;
-  if (fwTrial) Serial.println("new firmware on trial: open the page within 10 min to keep it");
-
-  WiFi.persistent(false);             // the router lives in our settings, not in the Wi-Fi driver's own storage
-  WiFi.setHostname(HOSTNAME);
-  WiFi.setAutoReconnect(false);       // wifiLoop() does the retries
-  staDownMs = millis();
-  if (staSsid.length()) { WiFi.mode(WIFI_STA); WiFi.setTxPower(WIFI_POWER_8_5dBm); staJoin(); }
-  else apStart();
-
-  ArduinoOTA.setHostname(HOSTNAME);
-  ArduinoOTA.setPassword(otaPass.c_str());
-  ArduinoOTA.onStart([]() { safeStop("update"); });
-  ArduinoOTA.onEnd([]() { Serial.println("update received, restarting"); });
-  ArduinoOTA.onError([](ota_error_t e) { Serial.printf("update failed (error %u), old firmware still running\n", (unsigned)e); });
-  ArduinoOTA.begin();                 // also starts mDNS: maxxfan.local
-  MDNS.addService("http", "tcp", 80);
-
-  server.on("/", []() { webSeen = true; server.send_P(200, "text/html", PAGE); });
+  vannet::begin(server, NET);         // Wi-Fi, mDNS (maxxfan.local), updates; adds /api/wifi, /api/scan, POST /update
+  server.on("/", []() { vannet::pageSeen(); server.send_P(200, "text/html", PAGE); });
   server.on("/api/status", apiStatus);
   server.on("/api/lid", apiLid);
   server.on("/api/settings", apiSettings);
   server.on("/api/fan", apiFan);
-  server.on("/api/wifi", HTTP_POST, apiWifi);
-  server.on("/api/scan", apiScan);
   server.on("/api/setup", HTTP_POST, apiSetup);
   server.on("/setup", HTTP_GET, setupPage);
   server.on("/update", HTTP_GET, setupPage);
-  server.on("/update", HTTP_POST, webUpdateDone, webUpdateUpload);
   server.begin();
   static const char* MODES[] = {"knob only (ESP hands off)", "phone", "phone + knob"};
   Serial.printf("MaxxFan ESP %s ready, fan mode: %s, router \"%s\"\n", FW_BUILD, MODES[cfg.fanMode],
-                staSsid.length() ? staSsid.c_str() : "none: hotspot only");
+                vannet::routerSsid().length() ? vannet::routerSsid().c_str() : "none: hotspot only");
 }
 
 uint32_t lastM = 0, lastBlink = 0;
 void loop() {
   server.handleClient();
-  ArduinoOTA.handle();
-  wifiLoop();
-  fwTrialLoop();
+  vannet::loop();
   lidLoop();
   knobLoop();
   buttonLoop();

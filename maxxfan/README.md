@@ -5,8 +5,8 @@ driver, the 74AHCT125 buffer) lives in the aiCAD project, `S:\aiCAD\maxxfan_bldc
 `DESIGN.md`).
 
 Board: **ESP32-C3 SuperMini (HW-466AB)**, 22.5 x 18 mm, USB-C, headers soldered.
-Firmware: `maxxfan.ino` **v3**. Arduino core "esp32" by Espressif 3.3.12; board settings in `sketch.yaml`.
-1.12 MB = 57 % of the 1.9 MB app slot.
+Firmware: `maxxfan.ino` **v3.1** (v3 with the Wi-Fi / update code moved to `../libraries/vannet`, shared with the hub; same
+behaviour). Arduino core "esp32" by Espressif 3.3.12; board settings in `sketch.yaml`. 1.12 MB = 57 % of the 1.9 MB app slot.
 
 What it does:
 * **Lid** (DRV8871): open / close / stop / nudge from the phone page, the BOOT button, an optional panel button, or USB
@@ -88,7 +88,7 @@ Plug the ESP into the PC with a USB-C **data** cable and say "flash the MaxxFan 
 
 ### arduino-cli (board settings come from `sketch.yaml`)
 ```
-arduino-cli compile maxxfan
+arduino-cli compile --libraries libraries maxxfan
 arduino-cli upload  -p COM5 maxxfan
 arduino-cli monitor -p COM5 -c baudrate=115200
 ```
@@ -98,7 +98,8 @@ On this PC arduino-cli is `%USERPROFILE%\tools\arduino-cli\arduino-cli.exe`.
 Install **esp32 by Espressif Systems** 3.x (boards manager URL
 `https://espressif.github.io/arduino-esp32/package_esp32_index.json`). Open `maxxfan\maxxfan.ino`. **Tools**: ESP32C3 Dev
 Module, USB CDC On Boot **Enabled**, Flash Size 4MB, Partition Scheme **Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)**.
-Upload, then Serial Monitor at 115200: `MaxxFan ESP v3 ... ready`.
+Copy the repo's `libraries\vannet` folder into `Documents\Arduino\libraries` once (the IDE doesn't take
+`--libraries`). Upload, then Serial Monitor at 115200: `MaxxFan ESP v3.1 ... ready`.
 
 ### If the upload fails ("No serial data received", "Failed to connect")
 **Hold BOOT, tap RESET (or plug in USB while holding BOOT), release BOOT**, upload again, tap RESET after it finishes.
@@ -151,7 +152,7 @@ The file is **`maxxfan.ino.bin`** (~1.1 MB), never `.merged.bin` / `.bootloader.
 
 ### From a PC on the same network
 ```
-arduino-cli compile --output-dir build/maxxfan maxxfan
+arduino-cli compile --libraries libraries --output-dir build/maxxfan maxxfan
 "%LOCALAPPDATA%\Arduino15\packages\esp32\hardware\esp32\3.3.12\tools\espota.exe" -i maxxfan.local -a <setup password> -f build\maxxfan\maxxfan.ino.bin -r
 curl http://maxxfan.local/api/status
 ```

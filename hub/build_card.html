@@ -1,0 +1,235 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hub build card</title>
+<style>
+:root{--ink:#16181d;--mute:#5a5f6b;--line:#d7d9de;--bg:#ffffff;--card:#f6f6f8}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,Segoe UI,Arial,sans-serif}
+main{max-width:980px;margin:0 auto;padding:16px}
+h1{font-size:22px;margin:4px 0 2px}h2{font-size:17px;margin:18px 0 6px}
+.sub{color:var(--mute);margin:0 0 10px}
+table{border-collapse:collapse;width:100%;font-size:14px}td,th{border-top:1px solid var(--line);padding:5px 6px;vertical-align:top;text-align:left}
+td.pn{font-weight:700;white-space:nowrap}
+ol li{margin:4px 0}.box{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:10px 0}
+.warn{background:#fff4e5;border:1px solid #f0b46a;border-radius:8px;padding:10px 12px;margin:10px 0}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:700px){.grid{grid-template-columns:1fr}}
+code{font-size:13px}svg{display:block;height:auto}
+@media print{main{padding:0}h2{break-after:avoid}.pb{break-before:page}table,.box,.warn,svg{break-inside:avoid}}
+</style></head><body><main>
+<h1>Van hub &mdash; build card (ESP32-C3 SuperMini), firmware v1, box v1</h1>
+<p class=sub>Replaces the Uno on the flow meter. Victron, Renogy and the MaxxFan are wireless, so the hub has two connections:
+power (the converter's USB-C plug) and the <b>flow meter on a JST-SM plug</b>. Everything else lives in one printed box: the ESP
+and the 10k / 20k divider. Sensors <b>plug and unplug at the JST-SM</b>, a hand's width outside the box; no headers needed
+(header pins and DuPont plugs shake loose in a van, the JST-SM latches). Box: <code>S:\aiCAD\van_hub_box</code>. Firmware and
+setup: <code>S:\van-firmware\hub\README.md</code>.</p>
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 440" width="100%" style="max-width:940px;background:#fafafa;border:1px solid #ccc;border-radius:8px" font-family="system-ui,Segoe UI,Arial,sans-serif">
+<defs><pattern id="ant" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="8" height="8" fill="#efe3c2"/><line x1="0" y1="0" x2="0" y2="8" stroke="#c9a85a" stroke-width="3"/></pattern></defs>
+<!-- converter plug -->
+<polyline points="24,240 312,240" fill="none" stroke="#666" stroke-width="7" stroke-linecap="round"/>
+<text x="24" y="226" font-size="13" font-weight="700" fill="#333">12 &rarr; 5 V converter, USB-C plug</text>
+<text x="24" y="262" font-size="12" fill="#555">its input: fused 12 V (2 A)</text>
+<!-- board -->
+<rect x="330" y="118" width="302" height="244" rx="10" fill="#1f5f99" stroke="#123b61" stroke-width="2"/>
+<rect x="306" y="207" width="44" height="66" rx="8" fill="#b9bec5" stroke="#666" stroke-width="1.5"/>
+<text x="328" y="244" font-size="10" fill="#333" text-anchor="middle" font-weight="700">USB-C</text>
+<rect x="452" y="207" width="70" height="66" rx="4" fill="#2c2c2c"/>
+<text x="487" y="236" font-size="11" fill="#ddd" text-anchor="middle">ESP32-C3</text>
+<text x="487" y="252" font-size="10" fill="#aaa" text-anchor="middle">chip side up</text>
+<rect x="566" y="190" width="56" height="100" rx="4" fill="url(#ant)" stroke="#b08d3c" stroke-width="1.5"/>
+<text x="594" y="244" font-size="10" fill="#6b5420" text-anchor="middle" font-weight="700" transform="rotate(-90 594 240)">antenna</text>
+<text x="650" y="232" font-size="13" fill="#8a6a22" font-weight="700">wires: in from underneath,</text>
+<text x="650" y="250" font-size="12" fill="#8a6a22">soldered on top, run along the box floor</text>
+<text x="322" y="146" font-size="12" fill="#666" text-anchor="end">5V row</text>
+<text x="322" y="342" font-size="12" fill="#666" text-anchor="end">G5 row</text>
+<!-- wires -->
+<polyline points="362,142 362,96 250,96" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<polyline points="362,142 362,96 250,96" fill="none" stroke="#d62828" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="244" y="100" font-size="13" font-weight="700" fill="#d62828" text-anchor="end">5V &rarr; pigtail red</text>
+<polyline points="396,142 396,58 250,58" fill="none" stroke="#777" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<polyline points="396,142 396,58 250,58" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="244" y="62" font-size="13" font-weight="700" fill="#444" text-anchor="end">GND &rarr; lump &rarr; pigtail white</text>
+<polyline points="532,338 532,404 650,404" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<polyline points="532,338 532,404 650,404" fill="none" stroke="#1f9a55" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="656" y="408" font-size="13" font-weight="700" fill="#1f7a45">G10 &rarr; lump joint (3.3 V pulses)</text>
+<text x="20" y="160" font-size="12" fill="#555">three thin wires (26 AWG silicone, ~6 cm)</text>
+<text x="20" y="176" font-size="12" fill="#555">to the divider lump inside the box</text>
+<!-- 5V row -->
+<g font-size="11" font-weight="700" text-anchor="middle">
+<circle cx="362" cy="142" r="11" fill="#f2f2f2" stroke="#d62828" stroke-width="3.5"/>
+<circle cx="396" cy="142" r="11" fill="#f2f2f2" stroke="#555" stroke-width="3.5"/>
+<circle cx="430" cy="142" r="11" fill="#f2f2f2" stroke="#9aa" stroke-width="2"/>
+<circle cx="464" cy="142" r="11" fill="#f2f2f2" stroke="#9aa" stroke-width="2"/>
+<circle cx="498" cy="142" r="11" fill="#f2f2f2" stroke="#9aa" stroke-width="2"/>
+<circle cx="532" cy="142" r="11" fill="#f2f2f2" stroke="#9aa" stroke-width="2"/>
+<circle cx="566" cy="142" r="11" fill="#f2f2f2" stroke="#9aa" stroke-width="2"/>
+<circle cx="600" cy="142" r="11" fill="#f2f2f2" stroke="#9aa" stroke-width="2"/>
+<text x="362" y="174" fill="#ffd0d0">5V</text><text x="396" y="174" fill="#fff">GND</text><text x="430" y="174" fill="#b8c8d8">3V3</text>
+<text x="464" y="174" fill="#b8c8d8">G4</text><text x="498" y="174" fill="#b8c8d8">G3</text><text x="532" y="174" fill="#b8c8d8">G2</text>
+<text x="566" y="174" fill="#b8c8d8">G1</text><text x="600" y="174" fill="#b8c8d8">G0</text>
+<!-- G5 row -->
+<circle cx="362" cy="338" r="11" fill="#f2f2f2" stroke="#9aa" stroke-width="2"/>
+<circle cx="396" cy="338" r="11" fill="#f2f2f2" stroke="#9aa" stroke-width="2"/>
+<circle cx="430" cy="338" r="11" fill="#f2f2f2" stroke="#9aa" stroke-width="2"/>
+<circle cx="464" cy="338" r="11" fill="#f2f2f2" stroke="#9aa" stroke-width="2"/>
+<circle cx="498" cy="338" r="11" fill="#f2f2f2" stroke="#9aa" stroke-width="2"/>
+<circle cx="532" cy="338" r="11" fill="#f2f2f2" stroke="#1f9a55" stroke-width="3.5"/>
+<circle cx="566" cy="338" r="11" fill="#f2f2f2" stroke="#9aa" stroke-width="2"/>
+<circle cx="600" cy="338" r="11" fill="#f2f2f2" stroke="#9aa" stroke-width="2"/>
+<text x="362" y="314" fill="#b8c8d8">G5</text><text x="396" y="314" fill="#b8c8d8">G6</text><text x="430" y="314" fill="#b8c8d8">G7</text>
+<text x="464" y="314" fill="#b8c8d8">G8</text><text x="498" y="314" fill="#b8c8d8">G9</text><text x="532" y="314" fill="#9ff0c0">G10</text>
+<text x="566" y="314" fill="#b8c8d8">G20</text><text x="600" y="314" fill="#b8c8d8">G21</text>
+</g>
+<text x="20" y="430" font-size="12" fill="#666">Rows by their printed labels, counted from the USB-C end. The drawing doesn't care which row is on which side.</text>
+</svg>
+
+<h2>The lump (inside the box) and the plug</h2>
+<p class=sub>The meter's yellow wire puts out 5 V pulses; the ESP takes 3.3 V. The 10k + 20k divider sits in the box's bay, between
+the ESP wires and the pigtail, so any 3-wire sensor plugs straight in and a new meter needs no parts.</p>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 260" width="100%" style="max-width:940px;background:#fafafa;border:1px solid #ccc;border-radius:8px" font-family="system-ui,Segoe UI,Arial,sans-serif">
+<rect x="10" y="20" width="640" height="200" rx="10" fill="none" stroke="#c9a85a" stroke-width="2" stroke-dasharray="6 5"/>
+<text x="22" y="40" font-size="12" fill="#8a6a22" font-weight="700">inside the box</text>
+<!-- ESP pads -->
+<text x="24" y="84" font-size="13" font-weight="700" fill="#d62828">5V pad</text>
+<text x="24" y="134" font-size="13" font-weight="700" fill="#1f7a45">G10 pad</text>
+<text x="24" y="184" font-size="13" font-weight="700" fill="#444">GND pad</text>
+<!-- red straight through -->
+<polyline points="96,80 690,80" stroke="#d62828" stroke-width="4" fill="none" stroke-linecap="round"/>
+<!-- white straight through -->
+<polyline points="96,180 690,180" stroke="#777" stroke-width="7" fill="none" stroke-linecap="round"/>
+<polyline points="96,180 690,180" stroke="#fff" stroke-width="4" fill="none" stroke-linecap="round"/>
+<!-- G10 to joint -->
+<polyline points="96,130 300,130" stroke="#1f9a55" stroke-width="4" fill="none" stroke-linecap="round"/>
+<circle cx="310" cy="130" r="7" fill="#111"/>
+<!-- 20k joint -> white -->
+<polyline points="310,137 310,182" stroke="#999" stroke-width="2" fill="none"/>
+<rect x="297" y="142" width="26" height="32" rx="10" fill="#7a4b2a"/>
+<text x="334" y="163" font-size="14" font-weight="700" fill="#7a4b2a">20k</text>
+<circle cx="310" cy="180" r="5" fill="#111"/>
+<!-- 10k joint -> pigtail green -->
+<polyline points="317,130 380,130" stroke="#999" stroke-width="2" fill="none"/>
+<rect x="380" y="117" width="120" height="26" rx="12" fill="#9a6b3a"/><text x="440" y="135" font-size="14" font-weight="700" fill="#fff" text-anchor="middle">10k</text>
+<polyline points="500,130 690,130" stroke="#1f9a55" stroke-width="4" fill="none" stroke-linecap="round"/>
+<rect x="250" y="100" width="280" height="96" rx="16" fill="none" stroke="#555" stroke-width="1.5" stroke-dasharray="3 3"/>
+<text x="390" y="214" font-size="12" fill="#555" text-anchor="middle">heat-shrink each joint, then one sleeve over the lump</text>
+<text x="560" y="70" font-size="12" fill="#555">pigtail, zip-tied</text>
+<!-- JST-SM block -->
+<rect x="690" y="52" width="56" height="150" rx="6" fill="#222"/>
+<text x="718" y="40" font-size="13" font-weight="700" fill="#222" text-anchor="middle">JST-SM</text>
+<text x="718" y="222" font-size="12" fill="#555" text-anchor="middle">hub half</text>
+<rect x="752" y="52" width="56" height="150" rx="6" fill="#444"/>
+<text x="780" y="222" font-size="12" fill="#555" text-anchor="middle">meter half</text>
+<!-- meter wires -->
+<polyline points="808,80 920,80" stroke="#d62828" stroke-width="4" fill="none" stroke-linecap="round"/>
+<polyline points="808,130 920,130" stroke="#333" stroke-width="6" fill="none" stroke-linecap="round"/>
+<polyline points="808,130 920,130" stroke="#e0b000" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+<polyline points="808,180 920,180" stroke="#111" stroke-width="4" fill="none" stroke-linecap="round"/>
+<text x="914" y="72" font-size="12" font-weight="700" fill="#d62828" text-anchor="end">meter red</text>
+<text x="914" y="122" font-size="12" font-weight="700" fill="#9a7a00" text-anchor="end">yellow</text>
+<text x="914" y="172" font-size="12" font-weight="700" fill="#111" text-anchor="end">black</text>
+<text x="928" y="250" font-size="12" fill="#555" text-anchor="end">plug / unplug here: no parts on the meter side</text>
+</svg>
+
+<h2>The box</h2>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 250" width="100%" style="max-width:940px;background:#fafafa;border:1px solid #ccc;border-radius:8px" font-family="system-ui,Segoe UI,Arial,sans-serif">
+<!-- scale 10 px/mm: box 70 x 23 at x 120..820, y 70..300 -> use 10 px/mm, y 60..290 trimmed to fit: 23mm*8=184 -->
+<rect x="120" y="40" width="700" height="184" rx="16" fill="#e8d6a8" stroke="#8a6a22" stroke-width="2"/>
+<rect x="140" y="56" width="660" height="152" fill="#f7efd9" stroke="#b08d3c"/>
+<!-- usb slot -->
+<rect x="118" y="80" width="24" height="104" fill="#fafafa" stroke="#8a6a22"/>
+<text x="110" y="137" font-size="12" text-anchor="end" fill="#333">USB-C</text><text x="110" y="153" font-size="12" text-anchor="end" fill="#333">slot</text>
+<!-- pedestal + ESP -->
+<rect x="146" y="60" width="225" height="144" fill="#1f5f99" opacity=".85"/>
+<rect x="148" y="84" width="221" height="96" fill="none" stroke="#fff" stroke-dasharray="4 3"/>
+<text x="258" y="128" font-size="13" fill="#fff" text-anchor="middle" font-weight="700">ESP on the pedestal</text>
+<text x="258" y="146" font-size="11" fill="#d8e6f5" text-anchor="middle">wires run under both long edges</text>
+<!-- stop bar (lid) -->
+<rect x="373" y="100" width="15" height="64" fill="#4f7fbf"/>
+<text x="394" y="96" font-size="11" fill="#2f5f9f">&larr; lid stop bar</text>
+<!-- lump -->
+<rect x="470" y="104" width="220" height="56" rx="18" fill="#9a6b3a" opacity=".8"/>
+<text x="580" y="137" font-size="13" fill="#fff" text-anchor="middle" font-weight="700">divider lump (bay)</text>
+<!-- lugs -->
+<circle cx="470" cy="28" r="20" fill="#e8d6a8" stroke="#8a6a22" stroke-width="2"/><circle cx="470" cy="28" r="6" fill="#fff" stroke="#8a6a22"/>
+<circle cx="470" cy="236" r="20" fill="#e8d6a8" stroke="#8a6a22" stroke-width="2"/><circle cx="470" cy="236" r="6" fill="#fff" stroke="#8a6a22"/>
+<text x="500" y="22" font-size="11" fill="#555">lid screw M3 &times; 10</text>
+<!-- tie bridge -->
+<rect x="710" y="84" width="56" height="96" fill="#cdb57a" stroke="#8a6a22"/>
+<rect x="726" y="84" width="24" height="96" fill="none" stroke="#8a6a22" stroke-dasharray="3 2"/>
+<text x="738" y="200" font-size="11" fill="#555" text-anchor="middle">zip-tie bridge</text>
+<!-- window -->
+<rect x="798" y="92" width="24" height="80" fill="#fafafa" stroke="#8a6a22"/>
+<polyline points="690,132 860,132" stroke="#555" stroke-width="10" fill="none" stroke-linecap="round" opacity=".55"/>
+<text x="866" y="128" font-size="12" fill="#333">pigtail out</text><text x="866" y="144" font-size="12" fill="#333">(window)</text>
+<text x="20" y="248" font-size="11" fill="#666">Top view, lid off. 70 &times; 23 &times; 17 mm closed; mounting ears on two corners (not drawn).</text>
+</svg>
+
+<div class=grid>
+<div class=box><b>Parts</b><br>
+1 &times; ESP32-C3 SuperMini (the other one of the 2-pack), <b>no headers</b><br>
+1 &times; <b>printed hub box</b>, base + lid (below)<br>
+2 &times; <b>M3 &times; 10</b> screws (lid, self-tapping into the PETG lugs); 1 small zip tie (&le; 3.6 mm wide)<br>
+1 &times; <b>JST-SM 3-pin pigtail pair</b> (the LED-strip kind, red / green / white, male + female)<br>
+1 &times; 12 &rarr; 5 V USB-C converter, same kind as the MaxxFan's<br>
+1 &times; inline fuse holder + <b>2 A</b> fuse (or a spare fused circuit)<br>
+<b>1 &times; 10 k + 1 &times; 20 k</b> (&frac14; W), heat-shrink, ~20 cm thin silicone wire (26 AWG); 3-wire cable if the meter is
+further than the pigtail reaches<br>
+2 &times; #6 / M4 screws for the ears, or VHB under the floor</div>
+<div class=box><b>Printing the box</b><br>
+Source: <code>S:\aiCAD\van_hub_box</code>, <code>hub_box_plate.step</code> (base + lid on one plate). Separate parts:
+<code>hub_box_base</code> / <code>hub_box_lid</code> (.step / .stl / .3mf); the generators and measurements are in
+<code>_hub_box.py</code>.<br>
+<b>PETG</b>, 0.20 mm, no supports, both parts in print pose as exported (base floor down, lid outer face down): 15.3 g, 34 min.<br>
+Queued on the P1S as <b>q1012-172211</b> (Trello 3DP card &ldquo;Van hub box (base + lid)&rdquo;); it starts when you say go.<br>
+The ESP seat copies the MaxxFan box's (pedestal, finger over the USB shell, lid stop bar).</div>
+</div>
+
+<h2>Pins</h2>
+<table><tr><th>ESP pin</th><th>position</th><th>in the box</th><th>pigtail &rarr; meter</th></tr>
+<tr><td class=pn>USB-C</td><td>&ndash;</td><td colspan=2>converter plug, through the end-wall slot: power. Updates go over Wi-Fi; the USB-C is for a rescue flash.</td></tr>
+<tr><td class=pn style="color:#d62828">5V</td><td>5V row, 1st from USB</td><td>straight through</td><td>red &rarr; meter <b>red</b> (it needs 5 V, ~15 mA)</td></tr>
+<tr><td class=pn>GND</td><td>5V row, 2nd</td><td>the 20k joins it in the lump</td><td>white &rarr; meter <b>black</b></td></tr>
+<tr><td class=pn style="color:#1f7a45">G10</td><td>G5 row, 6th</td><td>lump joint: 20k to GND, 10k on</td><td>green &rarr; meter <b>yellow</b></td></tr>
+</table>
+<p class=sub>Red / green / white is the LED-strip order (5V / data / GND); check your pigtail, some kits swap the colours. Leave
+alone: 3V3, G2 (boot pin), G8 (on-board LED), G9 (BOOT button).</p>
+
+<h2>Build</h2><ol>
+<li><b>Print the box</b> (box above).</li>
+<li><b>Flash it on the bench first.</b> ESP into the PC with a USB-C <b>data</b> cable, say &ldquo;flash the hub&rdquo;. It comes up
+as the <b>VanHub</b> Wi-Fi: join it, open <b>http://192.168.4.1</b>, <b>Wi-Fi</b> at the bottom: pick the Starlink network, password,
+<b>save + join</b>. Then <b>http://van.local</b> works from the phone (README section 2).</li>
+<li><b>Pad wires:</b> three ~6 cm thin wires into the 5V, GND and G10 pad holes <b>from underneath</b>, soldered on top, nothing
+standing proud on top. They leave the board along its underside: the box floor has a 5 mm channel under each long edge.</li>
+<li><b>The lump</b> (drawing above): G10 wire &rarr; joint of the 10k and the 20k; the 20k's other end spliced into the GND run;
+the 10k's other end &rarr; pigtail <b>green</b>. 5V wire &rarr; pigtail <b>red</b>, GND run &rarr; pigtail <b>white</b>. Heat-shrink each
+joint, then one sleeve over the lot (about 22 &times; 8 mm).</li>
+<li><b>Checks (unpowered):</b> at the pigtail plug: red&ndash;white not shorted; green&ndash;white &asymp; <b>30 k</b> (10k + 20k).</li>
+<li><b>Into the box:</b> board chip side up, about 1 mm back from the USB end; lower it onto the pedestal, slide it toward the end
+wall until the USB-C sits in the slot. Lump in the bay; pigtail over the bridge, zip tie through the bridge's tunnel and around it,
+out of the window.</li>
+<li><b>Lid:</b> its tongue drops into the cable notch, its stop bar behind the board. Two M3 &times; 10 into the lugs: snug, not hard
+(PETG threads strip).</li>
+<li><b>Meter half:</b> the other pigtail half straight onto the meter: red&ndash;red, white&ndash;black, green&ndash;yellow, solder +
+heat-shrink. Plug it in.</li>
+<li><b>Mount and power:</b> ears or VHB; converter on the fused 12 V, its USB-C plug into the slot. The blue LED blinks every 2 s
+(through the lid only if it's printed in a light colour).</li>
+</ol>
+
+<h2>Bring-up (http://van.local)</h2><ol>
+<li><b>Water:</b> run a tap: the Water card shows gal/min and counts up. <b>No flow at all</b> while water runs: the meter is a
+bare open collector and the 20k holds G10 low; open the lid and snip one leg of the 20k (the ESP's own pull-up then does the job).
+Once it counts: fill a 1 gal jug, compare, and set <b>pulses per litre</b> on the setup page (default 450). Fill the tank, press
+<b>Tank filled</b>.</li>
+<li><b>Victron (once per device: 200W Aft, 320W Fwd, Jimbo):</b> VictronConnect &rarr; the device &rarr; gear &rarr;
+<b>&#8942; &rarr; Product info</b> &rarr; Instant readout details: <b>Show</b>, copy the key with the copy button.
+<b>http://van.local/setup</b> (user <code>van</code>, password <code>vanhub-ota</code>) &rarr; Victron: paste it into that device, give
+it its name, <b>Save</b>. The line turns green, <code>key OK</code>.</li>
+<li><b>Renogy:</b> nothing to set. The Battery card shows the BMS line within a minute; if not, close the DC Home app (the battery
+takes one connection at a time).</li>
+<li><b>MaxxFan:</b> shows up by itself when both are on the Starlink Wi-Fi (setup page address <code>maxxfan</code>).</li>
+<li><b>Where to mount it:</b> the setup page shows each Victron device and the Renogy with its signal. Better than about
+&minus;85 dBm is fine; if one keeps going &ldquo;old&rdquo;, move the hub toward it or out of any metal cabinet.</li>
+<li><b>Passwords:</b> bottom of the setup page, replace the defaults.</li>
+</ol>
+<p class=sub>2026-10-12, hub firmware v1, box v1: flow on G10 with the pull-up on, rising edges, 450 pulses per litre, 25 gal
+tank (both on the setup page). The window takes a second pigtail and the bay has room for the tank probe's parts later.</p>
+</main></body></html>
