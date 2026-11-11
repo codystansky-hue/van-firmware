@@ -5,7 +5,7 @@ driver, the 74AHCT125 buffer) lives in the aiCAD project, `S:\aiCAD\maxxfan_bldc
 `DESIGN.md`).
 
 Board: **ESP32-C3 SuperMini (HW-466AB)**, 22.5 x 18 mm, USB-C, headers soldered.
-Firmware: `maxxfan.ino` **v4**: v3.1 plus the **FOC board** (`S:\aiCAD\maxxfan_bldc\pcb\foc_board`) as a fourth fan
+Firmware: `maxxfan.ino` **v4.1**: v3.1 plus the **FOC board** (`S:\aiCAD\maxxfan_bldc\pcb\foc_board`) as a fourth fan
 wiring, section 9. Wi-Fi and updates are in `../libraries/vannet` (shared with the hub), the motor chip driver in
 `../libraries/mcf8316`. Arduino core "esp32" by Espressif 3.3.12; board settings in `sketch.yaml`. 1.17 MB = 59 % of the
 1.9 MB app slot.
@@ -51,12 +51,23 @@ Pick the stage on the setup page (**http://maxxfan.local/setup**, section 6); th
 | ESP dead (limp home) | ribbon out of the aqx plug, H11 into it | (any) | the knob, no ESP; the lid only by hand |
 | **FOC board** | the FOC board replaces the aqx, buffer, dividers and lid module; H11 in its panel socket J3 | **FOC board** (picked by itself, section 9) | knob **and** phone, as Phone + knob |
 
-In **Phone + knob**:
-* Turning the knob (5 % or more) or flipping the direction switch hands the fan to the panel; it then follows the knob.
+In **Phone + knob** (and on the FOC board):
+* **The knob's travel** (v4.1), from the bottom:
+
+  | knob | lid | fan |
+  |---|---|---|
+  | **at its click** for 3 s | closes | off |
+  | **vent**: just past the click, about the first 15 % of the travel | opens | off |
+  | **beyond vent**, to full | opens first | speed 1 to 100 % (FOC board: 200 rpm to the top speed) |
+
+  Only a knob movement acts: a knob left at its click doesn't close a lid the phone opened. Turning it back up within the
+  3 s cancels the close; so does any phone or button command.
+* Turning the knob (5 % or more), moving it between those parts, or flipping the direction switch hands the fan to the
+  panel; it then follows the knob.
 * A phone (or hub) command hands it to the phone until the knob is turned again. The status line shows
   `set by phone, knob at 40%`.
 * Closing the lid cancels a phone request. With the knob up, the fan starts again when the lid reopens.
-* At power-up the knob position runs the fan only if the lid is already open; the ESP never opens the lid by itself at boot.
+* At power-up the knob position runs the fan only if the lid is already open; the ESP never moves the lid by itself at boot.
 * The fan only runs with the lid open and still. A new request opens the lid first. Reversing turns the drive off for 3 s
   before the direction flips.
 
@@ -75,7 +86,8 @@ harness plugs into it unchanged, so it can always go back into the aqx plug (lim
 
 * The ribbon goes from 5 to **7 wires**: GND, G4, G1, G3, **G10** (M), **G0** (knob), **G7** (direction).
 * Knob range: the divider gives about 2270 mV at full. The setup page shows the live reading (`Knob now: 47 % (1180 mV)`).
-  If full knob doesn't reach 100 %, or reaches it early, change `KNOB_FULL_MV` in the sketch (now 2150).
+  If full knob doesn't reach 100 %, or reaches it early, change `KNOB_FULL_MV` in the sketch (now 2150). The vent band
+  ends at `KNOB_VENT_MV` (420); the click is under `KNOB_OFF_MV` (120). The page's Settings > Fan shows the reading.
 * Optional panel lid button: a momentary push button from **G20** to GND, with 100 nF across it on a long run. Tap = open
   if closed, close if open, stop if moving (same as BOOT).
 * **CAD / harness docs not updated yet**: `HARNESS_BOM.md`, `WIRING.md` and the buffer build card in aiCAD still show
@@ -133,10 +145,12 @@ needs calibrating again. `arduino-cli upload` (above) and updates over Wi-Fi (se
    the ESP, not in this repo, and survive updates.
 
 ### Lid
-1. **nudge open** (0.5 s). If it moved the wrong way: tick **swap direction**, **Save settings**.
-2. **Calibrate**: nudge fully closed, **Set closed**; press **OPEN** and time it to fully open (**STOP** if it stalls);
-   enter that as **full travel ms**, keep **extra ms** ~600, **Save**.
-3. **OPEN / CLOSE** then run the calibrated time; **STOP** stops instantly; the position estimate survives power-off.
+Calibration is under **Settings** (bottom of the fan page) > **Lid**.
+1. **Nudge open** (0.5 s). If it moved the wrong way: tick **Swap the lid's direction**, **Save lid settings**.
+2. **Calibrate**: nudge fully closed, **Set closed**; go back, press **Open** and time it to fully open (**Stop** if it
+   stalls); enter that as **full travel, ms**, keep **extra at the ends** ~600, **Save lid settings**.
+3. The lid button on the main screen (**Open** / **Close**) then runs the calibrated time; **Stop** stops instantly; the
+   position estimate survives power-off.
 4. USB serial (115200): `o` open, `c` close, `s` stop, `j` / `J` nudge, `?` status.
 
 If the lid motor stalls hard at the ends (buzzing, hot), shorten **extra ms**.
@@ -184,7 +198,7 @@ private networks (the ESP connects back to the PC). If `maxxfan.local` doesn't r
 
 | request | does |
 |---|---|
-| `GET /api/status` | JSON: `state`, `pos` (lid %, -1 unknown), `fan_mode` (0 knob only, 1 phone, 2 phone + knob, 3 FOC board), `fan` (requested %), `fan_out` (running %), `dir` (`fwd` = exhaust / `rev`), `fan_src` (`knob` / `phone`), `fan_wait` (`lid` / `reverse` / ""), `m_hz` (FOC board: motor rev/s from FG), `knob`, `knob_mv`, `wifi_*`, `ap`, `fw`. FOC board also `foc` {`up`, `state`, `rpm`, `want_rpm`, `sent_rpm`, `vm`, `bus_a`, `phase_a`, `fault`, `eeprom` (`board` / `other` / `unknown`)}, `top_rpm`, `fan_swap` |
+| `GET /api/status` | JSON: `state`, `pos` (lid %, -1 unknown), `fan_mode` (0 knob only, 1 phone, 2 phone + knob, 3 FOC board), `fan` (requested %), `fan_out` (running %), `dir` (`fwd` = exhaust / `rev`), `fan_src` (`knob` / `phone`), `fan_wait` (`lid` / `reverse` / ""), `m_hz` (FOC board: motor rev/s from FG), `knob` (fan % the knob asks for), `knob_mv`, `knob_zone` (`off` / `vent` / `fan`, "" without a knob), `wifi_*`, `ap`, `fw`. FOC board also `foc` {`up`, `state`, `rpm`, `want_rpm`, `sent_rpm`, `vm`, `bus_a`, `phase_a`, `fault`, `eeprom` (`board` / `other` / `unknown`)}, `top_rpm`, `fan_swap`, `steps` (the slider's 10 speeds, rpm) |
 | `GET /api/lid?cmd=open\|close\|stop\|jog_open\|jog_close\|set_closed[&ms=500]` | lid |
 | `GET /api/fan?speed=0..100&dir=fwd\|rev` | fan, as a phone request (opens the lid if needed). FOC board: `rpm=200..1500` instead of `speed` |
 | `GET /api/settings?travel=&over=&ramp=&invert=0\|1` | lid calibration; FOC board also `top_rpm=400..1500`, `fan_swap=0\|1` |
@@ -220,27 +234,32 @@ and stays that way. (The chip runs from the same 12 V as the ESP; with the ESP o
 
 1. **Get v4 on the ESP**, keeping its settings: http://maxxfan.local/setup > Firmware update > `maxxfan.ino.bin` (section
    7), if it runs v3.x. Otherwise use USB (section 4).
-2. **Fan page**: the Fan box shows a **motor** line. Expect `motor: IDLE | 0 rpm | 12.x V`. If it says `not answering`,
-   the 12 V is off or the chip didn't start; the serial console (`?`) says more.
+2. **Fan page**: the bottom line shows `motor stopped · 12.x V`; **Settings > Motor** has the details (state, rpm, supply,
+   faults, whether the knob fallback is saved). A red box saying `Motor chip not answering` means the 12 V is off or the
+   chip didn't start; the serial console (`?`) says more.
 3. **Lid**: check its direction and calibrate it (section 5) if that isn't done yet. The fan only runs with the lid fully
    open.
-4. **run at 400 rpm, exhaust**. The lid opens first if needed. You hear a small tick (the chip finding the rotor), then it
-   spins up. The motor line goes `IPD`, `OPEN_LOOP`, `CLOSED_LOOP_UNALIGNED`, `CLOSED_LOOP_ALIGNED`, and `rpm` settles near
-   400. `FG` should agree.
+4. **Speed 3 (400 rpm), Exhaust** on the main screen, or **Settings > Fan > run at 400, Run exhaust**. The lid opens first
+   if needed. You hear a small tick (the chip finding the rotor), then it spins up. Settings > Motor shows the state go
+   `IPD`, `OPEN_LOOP`, `CLOSED_LOOP_UNALIGNED`, `CLOSED_LOOP_ALIGNED`, and the speed settle near 400, with `FG` agreeing.
 5. **Direction**: if exhaust blows in, swap two of the three motor wires in J2 (that fixes the knob fallback too). The
-   **swap fan direction** box does it in software, for the ESP only.
-6. **Speeds**: try 600, 800, 1000, 1200 rpm and the % buttons. 100 % = **top speed** (1200 rpm, Minuet's top; up to 1500).
-   1 % = 200 rpm, the slowest it runs sensorless. Listen for hunting or buzzing.
-7. **Knob**: the knob and the phone both work, as in Phone + knob (section 2).
+   **Swap the fan's direction** box (Settings > Fan) does it in software, for the ESP only.
+6. **Speeds**: the slider's 10 speeds are Minuet's (200, 300 ... 900, 1000, 1200 rpm), scaled so speed 10 = the **top
+   speed** (Settings > Fan: 1200 rpm, Minuet's top; up to 1500). The knob runs from 200 rpm, the slowest it runs
+   sensorless, to the top speed. Listen for hunting or buzzing.
+7. **Knob**: the knob and the phone both work, and the knob runs the lid too (section 2): click 3 s = close, vent = lid
+   open with the fan off.
 8. **Check the real speed** once, with a phone tachometer or strobe app. If it's half or double the page's rpm, the motor's
    pole count (4 assumed) is wrong.
 9. **When it all runs well**: setup page > **Save the knob fallback into the motor chip**, once. After that the knob and
    switch run the fan with the ESP dead or unplugged (limp home; the lid only by hand), to about 1500 rpm at the top.
+   With no ESP there's no vent band: the bottom of the knob just runs the fan slowly.
    This writes the chip's EEPROM (about 20 000 writes in its life), and only if it differs. Until it's saved, a dead
    ESP means no fan.
 
-A fault turns the motor line red (and the board's red LED on). The chip retries 5 times, 1 s apart, then stops.
-**clear the motor fault**, or any new fan command, retries it.
+A fault shows a red box on the main screen saying why (`Motor stopped: it lost track of the rotor`), with the chip's
+fault names underneath, and the board's red LED comes on. The chip retries 5 times, 1 s apart, then stops. **Clear the
+motor fault**, or any new fan command, retries it.
 
 | fault | likely |
 |---|---|

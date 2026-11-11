@@ -77,7 +77,7 @@ function fan(r){let m=r.maxxfan;
  let s=m.s,sp=s.fan_out||s.fan;
  let t='lid '+s.state+(s.pos<0?' (position unknown)':' &middot; ~'+Math.round(s.pos)+'% open');
  let f=s.fan_mode==0?'fan: knob only':'fan '+(sp?sp+'% '+(s.dir=='fwd'?'exhaust':'intake'):'off')
-  +(s.fan_wait?' ('+(s.fan_wait=='lid'?'waiting for the lid':'reversing')+')':'')+(s.fan_mode==2?' &middot; set by '+s.fan_src:'');
+  +(s.fan_wait?' ('+(s.fan_wait=='lid'?'waiting for the lid':'reversing')+')':'')+(s.fan_mode>=2?' &middot; set by '+s.fan_src:'');
  $('fan').innerHTML='<div class="big" style="font-size:24px">'+t+'</div><div class="m">'+f+old(m.age>10?m.age:null)+'</div>';
  $('fanb').hidden=s.fan_mode==0;fanSet={speed:s.fan,dir:s.dir};
  $('sp').innerHTML=[0,30,60,100].map(v=>'<button class="'+(s.fan==v?'on':'')+'" onclick="mf(\'speed='+v+'&dir='+s.dir+'\')">'+(v?v+'%':'off')+'</button>').join('');

@@ -12,6 +12,11 @@
 //   itself when the chip answers at start-up. Fan page: motor line (state, rpm, current, faults), run-at-rpm box, top
 //   speed, swap direction. Setup page: write the knob fallback (limp home) into the chip's EEPROM, by hand, once.
 //   The other fan modes are unchanged.
+// v4.1 (2026-11-10): the knob runs the lid. Its click, held 3 s, closes the lid; just past the click is vent (lid open,
+//   fan off); beyond that, fan speed (Phone + knob and FOC board). New phone page: one screen with the lid, a 10-step
+//   speed slider (Minuet's speeds, scaled to the top speed), exhaust / intake and off; calibration, fan settings, motor
+//   details and Wi-Fi under Settings; plain-language motor faults. Fixes: a fan request while the lid was closing never
+//   reopened it; reversing the lid mid-move timed the new move from the old start position.
 //
 // Arduino core "esp32" by Espressif 3.x (3.3.12). Board settings are in sketch.yaml: ESP32C3 Dev Module, USB CDC On Boot
 // Enabled, Partition Scheme "Minimal SPIFFS (1.9MB APP with OTA)". Build with --libraries libraries (the repo's folder,
@@ -26,7 +31,7 @@
 #include <FocMotor.h>
 
 // ------------------------------------------------------------------ configuration
-#define FW_VERSION "v4"
+#define FW_VERSION "v4.1"
 const char* FW_BUILD = FW_VERSION " " __DATE__ " " __TIME__;
 
 void safeStop(const char* why);
@@ -48,6 +53,8 @@ enum FanMode : uint8_t {
   FAN_PHONE_KNOB  = 2,                // + knob harness in the panel port: knob and phone, whichever was touched last
   FAN_FOC         = 3                 // FOC board (MCF8316D over I2C): knob and phone, whichever was touched last
 };
+// where the knob is in its travel (knobLoop): at its click, the vent band, or the fan part
+enum KnobZone : uint8_t { KZ_OFF, KZ_VENT, KZ_FAN };
 
 // pins (ESP32-C3 GPIO numbers = the "G" labels on the SuperMini)
 const int PIN_LID_IN1 = 6;            // G6 -> DRV8871 IN1  (harness H5, white)
@@ -70,7 +77,10 @@ const int PIN_FOC_NFAULT = 10;        // G10 <- MCF8316D nFAULT, LOW = fault (th
 int pinKnob = PIN_KNOB;               // G0, or G4 on the FOC board
 
 const uint32_t KNOB_OFF_MV  = 120;    // below this the knob is at its click = off
+const uint32_t KNOB_VENT_MV = 420;    // click .. this = vent: lid open, fan off (about the first 15 % of the travel)
 const uint32_t KNOB_FULL_MV = 2150;   // knob fully up (the divider gives ~2270 mV; the setup page shows the reading)
+const uint32_t KNOB_HYST_MV = 25;     // hysteresis at the click / vent / fan edges
+const uint32_t KNOB_CLOSE_MS = 3000;  // the knob sits at its click this long: the lid closes
 const uint32_t LID_PWM_HZ   = 20000;  // DRV8871 input PWM for the soft start (inaudible)
 const uint32_t FAN_PWM_HZ   = 20000;  // aqx VR accepts 1-20 kHz PWM
 const uint32_t FLIP_WAIT_MS = 3000;   // fan reversal: drive off this long before ZF flips
@@ -168,10 +178,11 @@ void lidStart(int dir, uint32_t durMs, bool full) {
   Serial.printf("lid %s for %lu ms\n", dir > 0 ? "OPEN" : "CLOSE", (unsigned long)moveDurMs);
 }
 
-void lidOpen()  { float p = (lidPos < 0) ? 0 : lidPos; lidStart(+1, (uint32_t)((100.0f - p) / 100.0f * cfg.travelMs), true); }
+// currentPos(), not lidPos: when reversing mid-move, lidPos still holds where the move started (v4.1 fix)
+void lidOpen()  { float p = currentPos(); if (p < 0) p = 0; lidStart(+1, (uint32_t)((100.0f - p) / 100.0f * cfg.travelMs), true); }
 void lidClose() {
   if (!fanFromKnob) fanSpeed = 0;       // closing cancels a phone fan request (a knob that is up stays up)
-  float p = (lidPos < 0) ? 100 : lidPos;
+  float p = currentPos(); if (p < 0) p = 100;
   lidStart(-1, (uint32_t)(p / 100.0f * cfg.travelMs), true);
 }
 void lidJog(int dir, uint32_t ms) { lidStart(dir, ms, false); }
@@ -205,7 +216,11 @@ uint32_t flipAt = 0;                  // reversal in progress: ZF flips at this 
 volatile uint32_t mPulses = 0;
 float mHz = 0;
 float knobMv = 0;
-int  knobPct = 0, knobTaken = 0;      // knob now / knob when the fan was last set
+int  knobPct = 0, knobTaken = 0;      // fan % the knob asks for now / when the fan was last set (0 at the click and vent)
+// The knob's travel (v4.1): its click = off (parked there 3 s: the lid closes), then a vent band (lid open, fan off), then
+// fan speed 1-100 %. Only a knob movement acts; a phone command wins until the knob moves again.
+KnobZone knobZone = KZ_OFF, knobZoneTaken = KZ_OFF;
+uint32_t knobCloseAt = 0;             // the knob was turned to its click: close the lid at this time (0 = no)
 bool dirFwd = true, dirRaw = true;    // direction switch: debounced / raw
 uint32_t knobT = 0, dirChangeMs = 0;
 
@@ -365,12 +380,18 @@ String focSaveEeprom() {
   return msg;
 }
 
+void lidEnsureOpen() {                // open the lid unless it's open or already opening (reverses a close)
+  if (lidMove == LID_OPENING) return;
+  if (lidMove == LID_IDLE && lidPos >= 95.0f) return;
+  lidOpen();
+}
+
 void setFan(int speed, bool forward, bool fromKnob, bool mayOpenLid = true) {
   if (!fanEsp()) return;
   fanSpeed = constrain(speed, 0, 100); fanForward = forward; fanFromKnob = fromKnob;
-  if (!fromKnob) knobTaken = knobPct;           // the knob has to move again to take over
+  if (!fromKnob) { knobTaken = knobPct; knobZoneTaken = knobZone; knobCloseAt = 0; }   // the knob has to move again
   if (cfg.fanMode == FAN_FOC && focUp && (focGd || focCt)) { foc.clear_faults(); }   // a new request retries a fault
-  if (mayOpenLid && fanSpeed > 0 && !(lidPos >= 95.0f) && lidMove != LID_OPENING) lidOpen();
+  if (mayOpenLid && fanSpeed > 0) lidEnsureOpen();
 }
 
 bool fanSpinning() { return fanOut > 0 || mHz > 1 || (cfg.fanMode == FAN_FOC && focUp && fabsf(focRpm) > 30); }
@@ -391,15 +412,22 @@ void fanApply() {
   ledcWrite(PIN_FAN_VR, (uint32_t)(1023UL * s / 100));
 }
 
-int knobToPct(float mv) {
-  if (mv < KNOB_OFF_MV) return 0;
-  return constrain((int)lroundf(100.0f * (mv - KNOB_OFF_MV) / (KNOB_FULL_MV - KNOB_OFF_MV)), 1, 100);
+// Which part of its travel the knob is in, with hysteresis at each edge so it doesn't flicker there.
+KnobZone knobZoneFor(float mv, KnobZone prev) {
+  float e1 = (float)KNOB_OFF_MV + (prev == KZ_OFF ? (float)KNOB_HYST_MV : -(float)KNOB_HYST_MV);
+  float e2 = (float)KNOB_VENT_MV + (prev == KZ_FAN ? -(float)KNOB_HYST_MV : (float)KNOB_HYST_MV);
+  return mv < e1 ? KZ_OFF : mv < e2 ? KZ_VENT : KZ_FAN;
+}
+int knobToPct(float mv) {             // fan % in the fan part of the travel
+  return constrain(1 + (int)lroundf(99.0f * (mv - KNOB_VENT_MV) / (KNOB_FULL_MV - KNOB_VENT_MV)), 1, 100);
 }
 void knobRead() {
   knobMv += 0.25f * ((float)analogReadMilliVolts(pinKnob) - knobMv);
-  knobPct = knobToPct(knobMv);
+  knobZone = knobZoneFor(knobMv, knobZone);
+  knobPct = knobZone == KZ_FAN ? knobToPct(knobMv) : 0;
 }
 bool hasKnob() { return cfg.fanMode == FAN_PHONE_KNOB || cfg.fanMode == FAN_FOC; }
+const char* knobZoneName(KnobZone z) { return z == KZ_FAN ? "fan" : z == KZ_VENT ? "vent" : "off"; }
 
 void knobLoop() {
   if (!hasKnob()) return;
@@ -411,13 +439,27 @@ void knobLoop() {
   if (d != dirRaw) { dirRaw = d; dirChangeMs = now; }
   bool flipped = (dirRaw != dirFwd && now - dirChangeMs > 50);
   if (flipped) dirFwd = dirRaw;
+  bool zoneMoved = knobZone != knobZoneTaken;
   int step = abs(knobPct - knobTaken);
-  bool deliberate = step >= 5 || flipped || (knobTaken == 0 && knobPct > 0);   // a real turn: may open the lid
-  bool follow = fanFromKnob && (step >= 2 || (knobPct == 0) != (knobTaken == 0));
+  bool deliberate = zoneMoved || flipped || step >= 5;      // a real turn: may move the lid
+  bool follow = fanFromKnob && step >= 2;
   if (deliberate || follow) {
     if (!fanFromKnob) Serial.println("fan: the knob took over");
     knobTaken = knobPct;
-    setFan(knobPct, dirFwd, true, deliberate);
+    knobZoneTaken = knobZone;
+    setFan(knobPct, dirFwd, true, deliberate);              // fan part: may open the lid; click / vent: fan off
+    if (zoneMoved) {
+      knobCloseAt = 0;
+      if (knobZone == KZ_VENT) { Serial.println("knob: vent, lid open, fan off"); lidEnsureOpen(); }
+      if (knobZone == KZ_OFF) knobCloseAt = (now + KNOB_CLOSE_MS) | 1;   // never 0
+    }
+  }
+  if (knobCloseAt && (int32_t)(now - knobCloseAt) >= 0) {   // still at the click, nobody else touched it: close
+    knobCloseAt = 0;
+    if (fanFromKnob && knobZone == KZ_OFF && !(lidMove == LID_IDLE && lidPos == 0.0f)) {
+      Serial.println("knob: at its click, closing the lid");
+      lidClose();
+    }
   }
 }
 
@@ -427,6 +469,7 @@ void buttonLoop() {
   bool down = digitalRead(PIN_BOOT) == LOW || digitalRead(PIN_LID_BTN) == LOW;
   if (down && !btnWas) btnDownMs = millis();
   if (!down && btnWas && millis() - btnDownMs > 40) {
+    knobCloseAt = 0;                    // a button press overrides a pending knob close
     if (lidMove != LID_IDLE) lidStop("button");
     else if (lidPos >= 50.0f) lidClose();
     else lidOpen();
@@ -449,69 +492,160 @@ void safeStop(const char* why) {      // before an update or a restart
 WebServer server(80);
 
 const char PAGE[] PROGMEM = R"HTML(<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>MaxxFan</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>MaxxFan</title>
 <meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="MaxxFan">
-<style>body{font-family:system-ui,sans-serif;max-width:460px;margin:16px auto;padding:0 12px;color:#111}
-h1{font-size:22px}button{font-size:20px;padding:16px;margin:6px 0;width:100%;border-radius:10px;border:1px solid #999;background:#f2f2f2}
-.row{display:flex;gap:8px}.row button{flex:1}.go{background:#dff3e3}.stop{background:#f8d7d7}
-#st{font-size:18px;padding:10px;background:#eef3fb;border-radius:8px}input,select{font-size:16px}input{width:90px}
-.w{width:100%;box-sizing:border-box;margin:4px 0;padding:6px}#net{margin:2px 0 6px}
-fieldset{margin-top:14px;border-radius:8px}small{color:#555}</style></head><body>
-<h1>MaxxFan</h1><div id="st">...</div>
-<div class="row"><button class="go" onclick="c('open')">OPEN</button><button class="go" onclick="c('close')">CLOSE</button></div>
-<button class="stop" onclick="c('stop')">STOP</button>
-<div class="row"><button onclick="c('jog_open')">nudge open</button><button onclick="c('jog_close')">nudge close</button></div>
-<div id="fan"></div>
-<fieldset><legend>Calibrate the lid</legend>
-<small>Close the lid fully (nudge if needed), press <b>Set closed</b>, then time a full OPEN with a stopwatch and enter it.</small><br>
-full travel ms <input id="tr"> extra ms <input id="ov"><br>
-<label><input type="checkbox" id="inv"> swap direction (if OPEN closes)</label><br>
-<button onclick="save()">Save settings</button><button onclick="c('set_closed')">Set closed (position = 0 %)</button></fieldset>
-<fieldset><legend>Wi-Fi</legend><div id="net">...</div>
-<small>Save the van router (Starlink) here and your phone can stay on it: bookmark <b>http://maxxfan.local</b>.
-The MaxxFan hotspot then turns off, and comes back by itself when the router is off for 20 s.</small>
-<select id="nets" class="w" onchange="ss.value=this.value" hidden></select>
-<input id="ss" class="w" placeholder="network name" autocapitalize="off" autocorrect="off" spellcheck="false">
-<input id="pw" class="w" type="password" placeholder="password" autocapitalize="off" autocorrect="off">
-<div class="row"><button onclick="scan()">scan</button><button onclick="join()">save + join</button></div>
-<button onclick="forget()">forget router (hotspot only)</button><small id="wm"></small></fieldset>
-<p><small id="fw"></small> &middot; <small><a href="/setup">setup: fan wiring, passwords, firmware update</a></small></p>
+<style>
+:root{--bg:#f2f5f4;--card:#fff;--fg:#17201d;--mut:#5d6b66;--rule:#d6dfdb;--acc:#0d6b5a;--acc2:#dcefe9;--on:#fff;--bad:#b3261e;--bad2:#f9dedb;color-scheme:light}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1513;--card:#17201d;--fg:#e4ece8;--mut:#93a39d;--rule:#2a3632;--acc:#52c2a8;--acc2:#173a32;--on:#0f1513;--bad:#ff8a80;--bad2:#3d1c19;color-scheme:dark}}
+*{box-sizing:border-box}[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 -apple-system,system-ui,"Segoe UI",Roboto,sans-serif;
+padding:max(12px,env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) max(28px,env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-left))}
+.w{max-width:460px;margin:0 auto;display:grid;gap:14px}.v{display:grid;gap:14px;min-width:0}
+header{display:flex;align-items:center;justify-content:space-between;gap:10px}
+h1{font-size:22px;margin:0;font-weight:650}
+h2{font-size:12px;margin:0;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--mut)}
+.pill{font-size:13px;padding:4px 10px;border-radius:999px;background:var(--card);border:1px solid var(--rule);color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:62%}
+.pill.ok::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--acc);margin-right:6px;vertical-align:1px}
+.card{background:var(--card);border:1px solid var(--rule);border-radius:14px;padding:14px;display:grid;gap:12px}
+.hd{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.val{font-size:17px;font-weight:600;text-align:right;font-variant-numeric:tabular-nums}
+.sub{font-size:13px;color:var(--mut)}
+.bar{height:10px;border-radius:5px;background:var(--acc2);overflow:hidden}
+.bar>i{display:block;height:100%;width:0;background:var(--acc)}
+.bar.unk>i{width:100%;background:repeating-linear-gradient(45deg,var(--acc2) 0 6px,var(--rule) 6px 12px)}
+.row{display:flex;gap:10px}.row>*{flex:1;min-width:0}
+button{font:inherit;font-size:18px;font-weight:600;padding:14px;border-radius:12px;border:1px solid var(--rule);background:var(--bg);color:var(--fg);cursor:pointer;touch-action:manipulation}
+button.pri{background:var(--acc);border-color:var(--acc);color:var(--on)}
+button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+input[type=range]{width:100%;accent-color:var(--acc);height:34px;margin:0}
+.ticks{display:flex;justify-content:space-between;font-size:12px;color:var(--mut);padding:0 5px;margin-top:-8px;font-variant-numeric:tabular-nums}
+.seg{display:flex;border:1px solid var(--rule);border-radius:12px;overflow:hidden}
+.seg button{flex:1;border:0;border-radius:0;font-size:16px;padding:12px;background:var(--card)}
+.seg button+button{border-left:1px solid var(--rule)}
+.seg button.on{background:var(--acc2);color:var(--fg)}
+.alrt{background:var(--bad2);border:1px solid var(--bad);border-radius:12px;padding:12px;display:grid;gap:10px;font-size:15px}
+.alrt b{color:var(--bad)}.alrt button{font-size:15px;padding:10px}
+.foot{display:flex;justify-content:space-between;gap:10px;font-size:13px;color:var(--mut);padding:0 2px}
+a{color:var(--acc)}
+.sm{font-size:15px;padding:11px}
+input[type=number],input[type=text],input[type=password],select{font:inherit;font-size:16px;padding:9px;border-radius:8px;border:1px solid var(--rule);background:var(--bg);color:var(--fg);width:100%}
+label.ck{display:flex;gap:10px;align-items:center;font-size:15px}label.ck input{width:20px;height:20px;accent-color:var(--acc)}
+.f{display:grid;grid-template-rows:1fr auto;gap:4px;font-size:14px;color:var(--mut)}
+dl{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;margin:0;font-size:14px}dt{color:var(--mut)}dd{margin:0;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+</style></head><body><div class="w">
+<header><h1>MaxxFan</h1><span id="net" class="pill">...</span></header>
+
+<div id="vhome" class="v">
+<section class="card">
+<div class="hd"><h2>Lid</h2><span id="lidv" class="val">...</span></div>
+<div id="lidbar" class="bar"><i></i></div>
+<div class="row"><button id="lidb" class="pri" onclick="lidT()">Open</button><button onclick="lc('stop')">Stop</button></div>
+</section>
+<section class="card">
+<div class="hd"><h2>Fan</h2><span id="fanv" class="val">...</span></div>
+<div id="fanctl" class="v" style="gap:12px;width:100%">
+<input type="range" id="spd" min="0" max="10" step="1" value="0" aria-label="Fan speed, 0 is off">
+<div class="ticks"><span>off</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>10</span></div>
+<div class="seg"><button id="dx" onclick="dirn('fwd')">Exhaust</button><button id="di" onclick="dirn('rev')">Intake</button></div>
+<button onclick="fan(0)">Off</button>
+</div>
+<div id="fsub" class="sub"></div>
+</section>
+<div id="alrt" class="alrt" hidden><div id="altx"></div><button id="altb" onclick="clr()" hidden>Clear the motor fault</button></div>
+<div class="foot"><span id="foot"></span><a href="#settings">Settings &rsaquo;</a></div>
+</div>
+
+<div id="vset" class="v" hidden>
+<div class="foot"><a href="#">&lsaquo; Back</a><span id="fw"></span></div>
+<section class="card"><h2>Lid</h2>
+<div class="sub">Close it fully (nudge if needed) and press <b>Set closed</b>. Then time a full Open with a stopwatch and enter it as full travel.</div>
+<div class="row"><button class="sm" onclick="lc('jog_open')">Nudge open</button><button class="sm" onclick="lc('jog_close')">Nudge close</button></div>
+<button class="sm" onclick="lc('set_closed')">Set closed (position = 0 %)</button>
+<div class="row"><label class="f">full travel, ms<input id="tr" type="number" min="1000" max="60000" step="100"></label><label class="f">extra at the ends, ms<input id="ov" type="number" min="0" max="3000" step="50"></label></div>
+<label class="ck"><input type="checkbox" id="inv"> Swap the lid's direction (if Open closes it)</label>
+<button class="sm pri" onclick="saveLid()">Save lid settings</button>
+</section>
+<section class="card" id="sfan"><h2>Fan</h2>
+<div id="sfoc" class="v" style="gap:12px;width:100%">
+<div class="row"><label class="f">run at, rpm<input id="rpm" type="number" min="200" max="1500" step="50" value="400"></label><label class="f">top speed, rpm<input id="toprpm" type="number" min="400" max="1500" step="50"></label></div>
+<div class="row"><button class="sm" onclick="runRpm('fwd')">Run exhaust</button><button class="sm" onclick="runRpm('rev')">Run intake</button></div>
+<label class="ck"><input type="checkbox" id="swp"> Swap the fan's direction (if exhaust blows in; swapping two motor wires in J2 is better: it fixes the knob fallback too)</label>
+<button class="sm pri" onclick="saveFan()">Save fan settings</button>
+</div>
+<div class="sub" id="knobtx"></div>
+</section>
+<section class="card" id="smot"><h2>Motor</h2><dl id="mkv"></dl>
+<div class="sub">The knob fallback (the knob runs the fan with the ESP dead) is saved into the motor chip from <a href="/setup">setup</a>.</div></section>
+<section class="card"><h2>Wi-Fi</h2><div id="wnet" class="sub">...</div>
+<div class="sub">Save the van router (Starlink) and your phone can stay on it: bookmark <b>http://maxxfan.local</b>. The MaxxFan hotspot then turns off, and comes back by itself when the router is off for 20 s.</div>
+<select id="nets" onchange="$('ss').value=this.value" hidden></select>
+<input id="ss" type="text" placeholder="network name" autocapitalize="off" autocorrect="off" spellcheck="false">
+<input id="pw" type="password" placeholder="password" autocapitalize="off" autocorrect="off">
+<div class="row"><button class="sm" onclick="scan()">Scan</button><button class="sm pri" onclick="join()">Save and join</button></div>
+<button class="sm" onclick="forget()">Forget the router (hotspot only)</button><div id="wm" class="sub"></div>
+</section>
+<div class="foot"><a href="/setup">Setup: passwords, firmware update, fan wiring, knob fallback</a></div>
+</div>
+</div>
 <script>
-async function c(x){await fetch('/api/lid?cmd='+x);u()}
-async function save(){await fetch('/api/settings?travel='+tr.value+'&over='+ov.value+'&invert='+(inv.checked?1:0));u()}
-async function f(s,d){await fetch('/api/fan?speed='+s+'&dir='+d);u()}
-async function fr(d){if(rpm.value>0)await fetch('/api/fan?rpm='+rpm.value+'&dir='+d);u()}
-async function fsave(){await fetch('/api/settings?top_rpm='+toprpm.value+'&fan_swap='+(swp.checked?1:0));u()}
-async function fclr(){await fetch('/api/foc?cmd=clear');u()}
-async function wifi(p){let r=await fetch('/api/wifi',{method:'POST',body:new URLSearchParams(p)});wm.textContent=r.ok?'':await r.text();u()}
-function join(){if(ss.value)wifi({ssid:ss.value,pass:pw.value})}
-function forget(){if(confirm('Forget the router? The fan will only be on its own MaxxFan hotspot.'))wifi({forget:1})}
-async function scan(){wm.textContent='scanning ...';for(let i=0;i<15;i++){let r=await (await fetch('/api/scan')).json();
- if(r.nets){nets.innerHTML='<option value="">pick a network ('+r.nets.length+' found)</option>';
-  r.nets.forEach(n=>{let o=document.createElement('option');o.value=o.textContent=n;nets.appendChild(o)});
-  nets.hidden=false;wm.textContent='';return}
- await new Promise(z=>setTimeout(z,1000))}wm.textContent='scan failed, type the name'}
-let first=true;
-async function u(){let r=await (await fetch('/api/status')).json();
-let sp=r.fan_out||r.fan,fs=r.fan_mode==0?'fan: knob':'fan '+(sp?sp+'% '+(r.foc?'('+r.foc.want_rpm+' rpm) ':'')+(r.dir=='fwd'?'exhaust':'intake'):'off')
- +(r.fan_wait?' ('+(r.fan_wait=='lid'?'waiting for the lid':'reversing')+')':'')
- +(r.fan_mode>=2?' | set by '+r.fan_src+(r.fan_src=='phone'?', knob at '+r.knob+'%':''):'');
-st.textContent='lid: '+r.state+(r.pos<0?' (position unknown)':' ~'+Math.round(r.pos)+'% open')+' | '+fs;
-let n=!r.wifi_ssid?'no router saved':r.wifi_up?'on '+r.wifi_ssid+' ('+r.wifi_ip+', '+r.wifi_rssi+' dBm)':'trying '+r.wifi_ssid+' ...';
-n+=r.ap?' | hotspot on':' | hotspot off';
-if(r.wifi_up&&r.ap&&r.ap_clients)n+=' -- switch your phone to '+r.wifi_ssid+' and open http://maxxfan.local';
-net.textContent=n;fw.textContent='firmware '+r.fw;
-if(first){tr.value=r.travel;ov.value=r.over;inv.checked=r.invert;ss.value=r.wifi_ssid;first=false;
- if(r.fan_mode>0)fan.innerHTML='<fieldset><legend>Fan</legend><div class="row"><button onclick="f(0,\'fwd\')">off</button><button onclick="f(30,\'fwd\')">30%</button><button onclick="f(60,\'fwd\')">60%</button><button onclick="f(100,\'fwd\')">100%</button></div><div class="row"><button onclick="f(50,\'fwd\')">exhaust 50%</button><button onclick="f(50,\'rev\')">intake 50%</button></div>'+(r.fan_mode>=2?'<small>The knob and the phone both work: whichever you touched last runs the fan.</small>':'')
- +(r.foc?'<div id="mot" style="padding:8px;border-radius:8px;margin:8px 0">...</div><button id="fclrb" class="stop" onclick="fclr()" hidden>clear the motor fault</button>'
- +'run at <input id="rpm" type="number" min="200" max="1500" step="50" value="400"> rpm <div class="row"><button onclick="fr(\'fwd\')">exhaust</button><button onclick="fr(\'rev\')">intake</button></div>'
- +'top speed (100 %) <input id="toprpm" type="number" min="400" max="1500" step="50"> rpm<br><label><input type="checkbox" id="swp"> swap fan direction (if exhaust blows in; swapping two motor wires in J2 is better: it fixes the knob fallback too)</label>'
- +'<button onclick="fsave()">Save fan settings</button>':'')+'</fieldset>';
- if(r.foc){toprpm.value=r.top_rpm;swp.checked=r.fan_swap}}
-if(r.foc){let m=r.foc;mot.textContent=!m.up?'motor chip: not answering (12 V on?)':'motor: '+m.state+' | '+m.rpm+' rpm (FG '
- +Math.round(r.m_hz*60)+') | '+m.vm+' V, '+m.bus_a+' A bus, '+m.phase_a+' A phase'+(m.fault?' | FAULT '+m.fault:'');
- mot.style.background=m.fault?'#f8d7d7':'#eef3fb';fclrb.hidden=!m.fault}}
-u();setInterval(u,1000);
+const $=id=>document.getElementById(id);
+let R=null,first=true,hold=0,armForget=0;
+async function g(u){try{let r=await fetch(u);if(r.ok)show(await r.json())}catch(e){}}
+function lc(c){g('/api/lid?cmd='+c)}
+function lidAct(){if(!R)return'open';return R.state=='opening'?'close':R.state=='closing'?'open':(R.pos>=50?'close':'open')}
+function lidT(){lc(lidAct())}
+function curDir(){return R&&R.dir=='rev'?'rev':'fwd'}
+function fan(n){hold=Date.now()+2500;$('spd').value=n;
+ if(!n)return g('/api/fan?speed=0&dir='+curDir());
+ g(R&&R.steps?'/api/fan?rpm='+R.steps[n-1]+'&dir='+curDir():'/api/fan?speed='+n*10+'&dir='+curDir())}
+function dirn(d){g('/api/fan?speed='+(R?R.fan:0)+'&dir='+d)}
+function runRpm(d){if($('rpm').value>0)g('/api/fan?rpm='+$('rpm').value+'&dir='+d)}
+function clr(){g('/api/foc?cmd=clear')}
+function saveLid(){g('/api/settings?travel='+$('tr').value+'&over='+$('ov').value+'&invert='+($('inv').checked?1:0))}
+function saveFan(){g('/api/settings?top_rpm='+$('toprpm').value+'&fan_swap='+($('swp').checked?1:0))}
+function stepOf(r){if(!r.fan)return 0;
+ if(r.steps){let b=1,bd=1e9;r.steps.forEach((s,i)=>{let d=Math.abs(s-r.foc.want_rpm);if(d<bd){bd=d;b=i+1}});return b}
+ return Math.min(10,Math.max(1,Math.round(r.fan/10)))}
+const ZONE={off:'at its click',vent:'at vent',fan:'up'};
+const WHY=[[/NO_MTR/,'a motor wire is loose'],[/IPD_/,'it could not find the rotor at start-up'],[/MTR_LCK|ABN_SPEED|ABN_BEMF/,'it lost track of the rotor'],[/LOCK_ILIMIT/,'too much current'],[/UNDER_VOLTAGE/,'the 12 V dropped under 8 V'],[/OVER_VOLTAGE|OVP/,'the supply went over 18 V'],[/OTW|OTS/,'the motor chip is hot']];
+function why(t){let w=WHY.filter(x=>x[0].test(t)).map(x=>x[1]);return w.length?w.join(', ')+'.':''}
+$('spd').oninput=()=>{hold=Date.now()+2500;let n=+$('spd').value;$('fanv').textContent=n?'speed '+n+(R&&R.steps?' · '+R.steps[n-1]+' rpm':''):'off'};
+$('spd').onchange=()=>fan(+$('spd').value);
+function show(r){R=r;
+ let n=$('net');n.textContent=r.wifi_up?r.wifi_ssid:r.ap?'MaxxFan hotspot':'no Wi-Fi';n.className='pill'+(r.wifi_up?' ok':'');
+ let p=r.pos,lv=r.state=='opening'?'opening':r.state=='closing'?'closing':p<0?'position unknown':p>=95?'open':p<=0?'closed':Math.round(p)+'% open';
+ $('lidv').textContent=lv;$('lidbar').className='bar'+(p<0?' unk':'');$('lidbar').firstChild.style.width=(p<0?0:p)+'%';
+ $('lidb').textContent=lidAct()=='open'?'Open':'Close';
+ let s=stepOf(r),f=r.foc,parts=[];
+ $('fanctl').hidden=r.fan_mode==0;
+ if(r.fan_mode==0){$('fanv').textContent='knob';parts.push('The knob runs the fan directly (fan wiring: knob only).')}
+ else{if(Date.now()>hold){$('spd').value=s;$('fanv').textContent=r.fan?'speed '+s+(f?' · '+f.want_rpm+' rpm':''):'off'}
+  $('dx').className=r.dir=='fwd'?'on':'';$('di').className=r.dir=='rev'?'on':'';
+  if(r.fan)parts.push(r.dir=='fwd'?'exhaust':'intake');
+  if(r.fan_wait=='lid')parts.push('waits for the lid to open');else if(r.fan_wait=='reverse')parts.push('reversing');
+  if(r.fan_mode>=2)parts.push('set by '+r.fan_src+(r.knob_zone?', knob '+ZONE[r.knob_zone]+(r.knob_zone=='fan'?' ('+r.knob+'%)':''):''))}
+ $('fsub').textContent=parts.join(' · ');
+ let a='';if(f&&!f.up)a='<b>Motor chip not answering.</b> Is the 12 V on?';else if(f&&f.fault)a='<b>Motor stopped:</b> '+(why(f.fault)||'a fault.')+'<div class="sub">'+f.fault.replace(/\|/g,', ')+'</div>';
+ $('altx').innerHTML=a;$('alrt').hidden=!a;$('altb').hidden=!(f&&f.up&&f.fault);
+ $('foot').textContent=f&&f.up?(f.state=='IDLE'?'motor stopped':Math.round(f.rpm)+' rpm')+' · '+f.vm+' V':'firmware '+r.fw.split(' ')[0];
+ $('fw').textContent='firmware '+r.fw;
+ $('sfan').hidden=r.fan_mode==0;$('sfoc').hidden=!f;$('smot').hidden=!f;
+ $('knobtx').textContent=r.knob_zone?'Knob: '+ZONE[r.knob_zone]+' ('+r.knob_mv+' mV). Turned to its click for 3 s, it closes the lid. Just past the click is vent: lid open, fan off. Beyond that, fan speed.':'';
+ if(f)$('mkv').innerHTML='<dt>state</dt><dd>'+f.state+'</dd><dt>speed</dt><dd>'+Math.round(f.rpm)+' rpm (FG '+Math.round(r.m_hz*60)+')</dd><dt>asked for</dt><dd>'+f.sent_rpm+' rpm</dd><dt>supply</dt><dd>'+f.vm+' V, '+f.bus_a+' A</dd><dt>phase peak</dt><dd>'+f.phase_a+' A</dd><dt>faults</dt><dd>'+(f.fault||'none')+'</dd><dt>knob fallback</dt><dd>'+(f.eeprom=='board'?'saved in the motor chip':f.eeprom=='other'?'not saved yet':'unknown')+'</dd>';
+ let w=!r.wifi_ssid?'No router saved.':r.wifi_up?'On '+r.wifi_ssid+' ('+r.wifi_ip+', '+r.wifi_rssi+' dBm).':'Trying '+r.wifi_ssid+' ...';
+ w+=r.ap?' Hotspot on.':' Hotspot off.';if(r.wifi_up&&r.ap&&r.ap_clients)w+=' Switch your phone to '+r.wifi_ssid+' and open http://maxxfan.local';
+ $('wnet').textContent=w;
+ if(first){first=false;$('tr').value=r.travel;$('ov').value=r.over;$('inv').checked=r.invert;$('ss').value=r.wifi_ssid;
+  if(f){$('toprpm').value=r.top_rpm;$('swp').checked=r.fan_swap}}}
+async function wifi(p){let r=await fetch('/api/wifi',{method:'POST',body:new URLSearchParams(p)});$('wm').textContent=r.ok?'':await r.text();g('/api/status')}
+function join(){if($('ss').value)wifi({ssid:$('ss').value,pass:$('pw').value})}
+function forget(){if(Date.now()<armForget){armForget=0;wifi({forget:1})}else{armForget=Date.now()+4000;$('wm').textContent='Tap again to forget the router. The fan will only be on its own MaxxFan hotspot.'}}
+async function scan(){$('wm').textContent='Scanning ...';for(let i=0;i<15;i++){try{let r=await (await fetch('/api/scan')).json();
+ if(r.nets){let s=$('nets');s.innerHTML='<option value="">pick a network ('+r.nets.length+' found)</option>';
+  r.nets.forEach(x=>{let o=document.createElement('option');o.value=o.textContent=x;s.appendChild(o)});s.hidden=false;$('wm').textContent='';return}}catch(e){}
+ await new Promise(z=>setTimeout(z,1000))}$('wm').textContent='Scan failed: type the name.'}
+function route(){let s=location.hash=='#settings';$('vhome').hidden=s;$('vset').hidden=!s;window.scrollTo(0,0)}
+window.onhashchange=route;route();g('/api/status');setInterval(()=>g('/api/status'),1000);
 </script></body></html>)HTML";
 
 const char SETUP_PAGE[] PROGMEM = R"HTML(<!doctype html><html><head><meta charset="utf-8">
@@ -559,16 +693,25 @@ void apiStatus() {
   snprintf(buf, sizeof(buf),
            "{\"state\":\"%s\",\"pos\":%.1f,\"travel\":%lu,\"over\":%lu,\"invert\":%s,"
            "\"fan_mode\":%u,\"fan_control\":%s,\"fan\":%d,\"fan_out\":%d,\"dir\":\"%s\",\"fan_src\":\"%s\",\"fan_wait\":\"%s\","
-           "\"m_hz\":%.1f,\"knob\":%d,\"knob_mv\":%d,\"fw\":\"%s\",",
+           "\"m_hz\":%.1f,\"knob\":%d,\"knob_mv\":%d,\"knob_zone\":\"%s\",\"fw\":\"%s\",",
            st, currentPos(), (unsigned long)cfg.travelMs, (unsigned long)cfg.overMs, cfg.invert ? "true" : "false",
            (unsigned)cfg.fanMode, fanEsp() ? "true" : "false", fanSpeed, fanOut, fanForward ? "fwd" : "rev",
-           fanFromKnob ? "knob" : "phone", wait, mHz, knobPct, (int)knobMv, FW_BUILD);
+           fanFromKnob ? "knob" : "phone", wait, mHz, knobPct, (int)knobMv, hasKnob() ? knobZoneName(knobZone) : "",
+           FW_BUILD);
   String j(buf);
   if (cfg.fanMode == FAN_FOC) j += focJson();
   sendJson(j + vannet::statusFields() + "}");
 }
 
-String focJson() {                    // "foc":{...},"top_rpm":..,"fan_swap":..,  (FOC board only)
+// The phone page's 10 fan speeds: Minuet's table (200 ... 1000, 1200 rpm) scaled so speed 10 = the top speed.
+uint32_t speedStepRpm(int n) {
+  uint32_t r = (uint32_t)lroundf(FOC_MOTOR.speed_table_rpm[n - 1] * (float)cfg.topRpm / 1200.0f / 10.0f) * 10;
+  return constrain(r, (uint32_t)FOC_MIN_RPM, cfg.topRpm);
+}
+
+String focJson() {                    // "foc":{...},"top_rpm":..,"fan_swap":..,"steps":[..],  (FOC board only)
+  String steps = "\"steps\":[";
+  for (int n = 1; n <= 10; n++) steps += String(speedStepRpm(n)) + (n < 10 ? "," : "],");
   char buf[420];
   String f = mcf8316::fault_text(focGd, focCt);
   snprintf(buf, sizeof(buf),
@@ -578,12 +721,13 @@ String focJson() {                    // "foc":{...},"top_rpm":..,"fan_swap":..,
            focSentRpm < 0 ? 0.0f : focSentRpm, focVm, focBusA, focPhaseA, vannet::jsonEsc(f).c_str(),
            focEeprom < 0 ? "unknown" : focEeprom ? "board" : "other", (unsigned long)cfg.topRpm,
            cfg.fanSwap ? "true" : "false");
-  return String(buf);
+  return String(buf) + steps;
 }
 
 void apiLid() {
   String c = server.arg("cmd");
   uint32_t ms = server.hasArg("ms") ? server.arg("ms").toInt() : 500;
+  knobCloseAt = 0;                      // the phone overrides a pending knob close
   if (c == "open") lidOpen();
   else if (c == "close") lidClose();
   else if (c == "stop") lidStop("web");
@@ -730,6 +874,7 @@ void setup() {
     dirFwd = dirRaw = digitalRead(PIN_DIR) == HIGH;
     setFan(knobPct, dirFwd, true, false);   // the knob as found: runs the fan only if the lid is already open
     knobTaken = knobPct;
+    knobZoneTaken = knobZone;               // and never moves the lid at start-up
     zfForward = fanForward;
   }
   Serial.begin(115200);

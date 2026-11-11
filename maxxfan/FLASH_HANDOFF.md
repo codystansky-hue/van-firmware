@@ -108,6 +108,24 @@ The laptop must be on the same Wi-Fi as the ESP. `BASE` = `http://maxxfan.local`
    with the 12 V off. He does that.
 6. Higher speeds (600 to 1200 rpm) only one at a time, each on his go, the same way.
 
+## Updating to a newer build (v4 is already on the ESP)
+
+v4 and later take updates over Wi-Fi, so no USB is needed. They keep their settings, and they roll back by themselves if
+the new firmware never answers a web request.
+1. `git pull` on `maxxfan-v4-foc`, then build as in step 3 (the version is `FW_VERSION` near the top of
+   `maxxfan/maxxfan.ino`).
+2. Upload over Wi-Fi with espota (`maxxfan/README.md` section 7). It needs the setup password: ask Cody (`maxxfan-ota` if
+   he never changed it). Windows:
+   ```
+   "%LOCALAPPDATA%\Arduino15\packages\esp32\hardware\esp32\3.3.12\tools\espota.exe" -i maxxfan.local -a <setup password> -f build\maxxfan\maxxfan.ino.bin -r
+   ```
+   macOS / Linux: `python3 ~/Library/Arduino15/packages/esp32/hardware/esp32/3.3.12/tools/espota.py ...` (Linux:
+   `~/.arduino15/...`), same arguments. Or USB as in step 4: that works too, and keeps the settings.
+3. Within 10 minutes, `curl http://maxxfan.local/api/status`: that keeps the new firmware (`"fw":"v4.1 ..."`). If it never
+   answers, the ESP goes back to the old one by itself.
+4. Report the `fw` value, `fan_mode`, and `foc.up` / `foc.state` / `foc.fault`. Same rules as above: nothing moves without
+   Cody's go.
+
 ## If something's off
 
 | what you see | do |
