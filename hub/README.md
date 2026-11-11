@@ -4,7 +4,7 @@ The van's dashboard: battery, solar, water and the MaxxFan on one page at **http
 **ESP32-C3 SuperMini (HW-466AB)**, the other one of the 2-pack, replaces the Arduino Uno on the flow meter.
 
 Firmware: `hub.ino` **v1**, **compiled, not flashed yet**. Arduino core "esp32" by Espressif 3.3.12 + **NimBLE-Arduino
-2.5.1**; board settings in `sketch.yaml` (same as the MaxxFan). 1.38 MB = 70 % of the 1.9 MB app slot. Wi-Fi, updates and
+2.5.1**; board settings in `sketch.yaml` (same as the MaxxFan). 1.39 MB = 70 % of the 1.9 MB app slot. Wi-Fi, updates and
 passwords come from `../libraries/vannet`, the same code the MaxxFan runs.
 
 | what | how | needs |
@@ -75,8 +75,12 @@ reads again when the app lets go. If the battery never answers, try Modbus addre
   state (bulk / absorption / float) and any error.
 * **Water**: gallons left and %, used since the tank was filled, flow while it runs. **Tank filled** starts the count
   from full again (section 5).
-* **MaxxFan**: lid and fan as on its own page; open / close / stop, fan speed and direction (when its fan mode is
-  Phone or Phone + knob). Hub commands count as phone commands: the knob still takes over when turned.
+* **MaxxFan**: lid and fan as on its own page; open / close / stop, the 10-step speed slider and exhaust / intake (when
+  its fan mode isn't Knob only). Hub commands count as phone commands: the knob still takes over when turned. With
+  MaxxFan v4.1 on the FOC board (v1.1): the motor's rpm, current, watts and supply voltage, where the knob is (at its
+  click / at vent / up), a fault in plain words with **Clear the fault**, and the **Motor** graph (speed, current, supply
+  over the last 2 or 10 min; drag a finger along it to read any moment; **Readings** for the numbers). The hub fetches
+  the fan's history every 30 s and the page adds the 3 s readings itself. Older MaxxFan firmware shows as before.
 * Readings over 2 min old are marked as old, e.g. `(5 min old)`.
 
 Setup page: Victron keys and names, Renogy name / address / interval, flow meter pulses per litre, tank size, units
@@ -91,7 +95,8 @@ the new firmware is kept once the dashboard loads, otherwise it rolls back after
 | request | does |
 |---|---|
 | `GET /api/status` | everything: `victron` [ ... ], `renogy` { ... }, `water` { ... }, `maxxfan` { ok, s: the MaxxFan's own status }, `wifi_*`, `fw`, `units` |
-| `GET /api/maxxfan?lid=open\|close\|stop` / `?speed=0..100&dir=fwd\|rev` | passed on to the MaxxFan |
+| `GET /api/maxxfan?lid=open\|close\|stop` / `?speed=0..100&dir=fwd\|rev` / `?rpm=200..1500&dir=fwd\|rev` / `?clear=1` | passed on to the MaxxFan (`rpm` and `clear` need v4.1 on the FOC board) |
+| `GET /api/maxxfan_history` | the MaxxFan's motor history as the hub last fetched it (every 30 s), `age` brought up to date; 404 until there is one |
 | `POST /api/water` `filled=1` | tank full: used = 0 |
 | `POST /api/wifi`, `GET /api/scan` | van router (as the MaxxFan) |
 | `GET /setup`, `POST /api/victron`, `/api/hub`, `/api/setup`, `/update` | setup (login) |

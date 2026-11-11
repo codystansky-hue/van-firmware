@@ -3,6 +3,11 @@
 //   Renogy RBT200LFP12-BT battery over Bluetooth (Modbus, read every 30 s); water used from the flow meter that the
 //   old Arduino Uno read (450 pulses per litre, 25 gal tank), counted from "tank filled" and kept through power cuts;
 //   the MaxxFan's status and controls through its HTTP API. Wi-Fi and updates: libraries/vannet, as the MaxxFan.
+// v1.1 (2026-11-10, still not flashed): the MaxxFan card catches up with MaxxFan v4.1 on the FOC board: the motor's rpm,
+//   current, watts and supply voltage, faults in plain words with a clear button, the 10 speed steps on a slider, where
+//   the knob is (click / vent / up), and a graph of the last 2 or 10 min. The hub fetches the fan's /api/history every
+//   30 s (GET /api/maxxfan_history serves that copy); /api/maxxfan also passes on rpm= and clear=1. Older MaxxFan
+//   firmware and the aqx fan modes show as before.
 //
 // Arduino core "esp32" by Espressif 3.3.12 + NimBLE-Arduino 2.5.1. Board settings in sketch.yaml (as the MaxxFan).
 // Build: arduino-cli compile --libraries libraries --output-dir build/hub hub. Wiring and use: README.md next to this file.
@@ -19,7 +24,7 @@
 #include "pages.h"
 
 // ------------------------------------------------------------------ configuration
-#define FW_VERSION "v1"
+#define FW_VERSION "v1.1"
 const char* FW_BUILD = FW_VERSION " " __DATE__ " " __TIME__;
 
 void safeStop(const char* why);
@@ -151,11 +156,12 @@ int mfGet(const String& path, String& body) {   // a plain HTTP/1.0 GET; the HTT
   }
   c.print("GET " + path + " HTTP/1.0\r\nHost: maxxfan.local\r\nConnection: close\r\n\r\n");
   String r;
+  r.reserve(1500);
   char buf[256];
   for (uint32_t t0 = millis(); (c.connected() || c.available()) && millis() - t0 < 2500;) {
     int n = c.read((uint8_t*)buf, sizeof(buf) - 1);
     if (n > 0) { buf[n] = 0; r += buf; } else delay(5);
-    if (r.length() > 4096) break;
+    if (r.length() > 12288) break;    // the fan's /api/history is ~6 KB; its status ~1 KB
   }
   c.stop();
   int h = r.indexOf("\r\n\r\n");
@@ -180,6 +186,21 @@ void mfPoll() {
   mfStore(code, body);
 }
 
+// The fan's motor history (MaxxFan v4.1 on the FOC board): fetched every 30 s by the worker, served to the hub page as is,
+// with its "age" brought up to date. The page adds the 3 s status readings itself.
+String mfHist;
+uint32_t mfHistMs = 0, mfHistPollMs = 0;
+
+void mfPollHistory() {
+  if (!vannet::routerUp()) return;
+  xSemaphoreTake(mfLock, portMAX_DELAY); bool foc = mfStatus.indexOf("\"foc\":") >= 0; xSemaphoreGive(mfLock);
+  if (!foc) return;                   // older firmware or an aqx fan mode: no history to get
+  String body;
+  int code = mfGet("/api/history", body);
+  if (code != 200 || !body.startsWith("{\"dt\"")) return;
+  xSemaphoreTake(mfLock, portMAX_DELAY); mfHist = body; mfHistMs = millis(); xSemaphoreGive(mfLock);
+}
+
 String maxxfanJson() {
   xSemaphoreTake(mfLock, portMAX_DELAY);
   uint32_t age = (millis() - mfMs) / 1000;
@@ -197,6 +218,7 @@ void worker(void*) {
     if (!paused) {
       if (renogy::due()) renogy::poll();
       if (millis() - mfPollMs >= 3000) { mfPollMs = millis(); mfPoll(); }
+      if (millis() - mfHistPollMs >= (mfHistMs ? 30000UL : 6000UL)) { mfHistPollMs = millis(); mfPollHistory(); }
     }
     vTaskDelay(pdMS_TO_TICKS(100));
   }
@@ -221,20 +243,38 @@ void apiStatus() {
   server.send(200, "application/json", s);
 }
 
-void apiMaxxfan() {                   // ?lid=open|close|stop  or  ?speed=0..100&dir=fwd|rev, passed on to the MaxxFan
-  String path;
+// ?lid=open|close|stop, ?speed=0..100&dir=fwd|rev, ?rpm=200..1500&dir=fwd|rev (FOC board), ?clear=1 (the motor chip's
+// faults): passed on to the MaxxFan
+void apiMaxxfan() {
+  String path, dir = server.arg("dir") == "rev" ? "rev" : "fwd";
   if (server.hasArg("lid")) {
     String c = server.arg("lid");
     if (c != "open" && c != "close" && c != "stop") { server.send(400, "text/plain", "lid = open | close | stop"); return; }
     path = "/api/lid?cmd=" + c;
+  } else if (server.hasArg("rpm")) {
+    path = "/api/fan?rpm=" + String(constrain(server.arg("rpm").toInt(), 0, 1500)) + "&dir=" + dir;
   } else if (server.hasArg("speed")) {
-    path = "/api/fan?speed=" + String(constrain(server.arg("speed").toInt(), 0, 100)) + "&dir=" + (server.arg("dir") == "rev" ? "rev" : "fwd");
-  } else { server.send(400, "text/plain", "lid=... or speed=...&dir=..."); return; }
+    path = "/api/fan?speed=" + String(constrain(server.arg("speed").toInt(), 0, 100)) + "&dir=" + dir;
+  } else if (server.arg("clear") == "1") {
+    path = "/api/foc?cmd=clear";
+  } else { server.send(400, "text/plain", "lid=..., speed=...&dir=..., rpm=...&dir=... or clear=1"); return; }
   String body;
   int code = mfGet(path, body);
   mfStore(code, body);
   if (code == 200) server.send(200, "application/json", body);
   else server.send(502, "text/plain", code < 0 ? "MaxxFan not reachable" : "MaxxFan answered " + String(code));
+}
+
+void apiMaxxfanHistory() {
+  xSemaphoreTake(mfLock, portMAX_DELAY);
+  String h = mfHist;
+  uint32_t since = millis() - mfHistMs;
+  xSemaphoreGive(mfLock);
+  int a = h.indexOf("\"age\":");
+  int e = a < 0 ? -1 : h.indexOf(',', a);
+  if (!h.length() || since > 120000UL || e < 0) { server.send(404, "text/plain", "no MaxxFan history yet"); return; }
+  float age = h.substring(a + 6, e).toFloat() + since / 1000.0f;
+  server.send(200, "application/json", h.substring(0, a + 6) + String(age, 1) + h.substring(e));
 }
 
 void apiWater() {                     // POST filled=1: the tank is full, start counting again
@@ -339,6 +379,7 @@ void setup() {
   server.on("/", []() { vannet::pageSeen(); server.send_P(200, "text/html", PAGE); });
   server.on("/api/status", apiStatus);
   server.on("/api/maxxfan", apiMaxxfan);
+  server.on("/api/maxxfan_history", apiMaxxfanHistory);
   server.on("/api/water", HTTP_POST, apiWater);
   server.on("/api/victron", HTTP_POST, apiVictron);
   server.on("/api/hub", HTTP_POST, apiHub);

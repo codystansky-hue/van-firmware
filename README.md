@@ -4,9 +4,11 @@ ESP32 firmware for the van.
 
 | folder | what | state |
 |---|---|---|
-| [`maxxfan/`](maxxfan/README.md) | MaxxFan BLDC retrofit: lid motor, fan (phone + knob), Wi-Fi on Starlink, updates over Wi-Fi | v3.1, compiled, not flashed yet |
-| [`hub/`](hub/README.md) | van hub: Victron solar + SmartShunt, Renogy battery, water, MaxxFan on one page, http://van.local | v1, compiled, not flashed yet |
+| [`maxxfan/`](maxxfan/README.md) ([flash handoff](maxxfan/FLASH_HANDOFF.md)) | MaxxFan BLDC retrofit: lid motor, fan (phone + knob; aqx board or the FOC board), Wi-Fi on Starlink, updates over Wi-Fi | v4, compiled, not run on the FOC board yet |
+| [`hub/`](hub/README.md) | van hub: Victron solar + SmartShunt, Renogy battery, water, MaxxFan (with its motor graph) on one page, http://van.local | v1.1, compiled, not flashed yet |
+| [`foc_test/`](foc_test/README.md) | bench test for the MaxxFan FOC board (MCF8316D): spin the motor from a USB serial console | v1, compiled, not run on hardware yet |
 | [`libraries/vannet/`](libraries/vannet/src/VanNet.h) | shared by both: Wi-Fi (router first, own hotspot as fallback), updates with rollback, passwords | |
+| [`libraries/mcf8316/`](libraries/mcf8316/src/FocMotor.h) | MCF8316D I2C driver and the FOC board's motor profile (from Minuet, MIT) | |
 
 Hardware for both: **ESP32-C3 SuperMini (HW-466AB)**. The MaxxFan's mechanical side (CAD, boxes, harnesses) is in the
 aiCAD project, `S:\aiCAD\maxxfan_bldc`.
@@ -22,6 +24,7 @@ arduino-cli core install esp32:esp32@3.3.12 --additional-urls https://espressif.
 arduino-cli lib install NimBLE-Arduino@2.5.1
 arduino-cli compile --libraries libraries --output-dir build/maxxfan maxxfan
 arduino-cli compile --libraries libraries --output-dir build/hub hub
+arduino-cli compile --libraries libraries --output-dir build/foc_test foc_test
 ```
 
 On Cody's PC arduino-cli is at `%USERPROFILE%\tools\arduino-cli\arduino-cli.exe` with the core and NimBLE installed (and

@@ -46,10 +46,20 @@ jobs:
       - name: Build hub
         run: arduino-cli compile --warnings all --libraries libraries --output-dir build/hub hub
 
+      - name: Build foc_test (FOC board bench test)
+        run: arduino-cli compile --warnings all --libraries libraries --output-dir build/foc_test foc_test
+
       - uses: actions/upload-artifact@v7
         with:
           name: maxxfan-firmware
           path: build/maxxfan/maxxfan.ino.bin
+
+      # USB from a laptop with no Arduino tools: flash at 0x0 with https://espressif.github.io/esptool-js/ (Chrome / Edge).
+      # The whole 4 MB flash: it also wipes the saved Wi-Fi, passwords and lid calibration (maxxfan/README.md section 4).
+      - uses: actions/upload-artifact@v7
+        with:
+          name: maxxfan-usb-full-image
+          path: build/maxxfan/maxxfan.ino.merged.bin
 
       - uses: actions/upload-artifact@v7
         with:
