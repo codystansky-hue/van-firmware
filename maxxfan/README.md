@@ -5,14 +5,16 @@ driver, the 74AHCT125 buffer) lives in the aiCAD project, `S:\aiCAD\maxxfan_bldc
 `DESIGN.md`).
 
 Board: **ESP32-C3 SuperMini (HW-466AB)**, 22.5 x 18 mm, USB-C, headers soldered.
-Firmware: `maxxfan.ino` **v3.1** (v3 with the Wi-Fi / update code moved to `../libraries/vannet`, shared with the hub; same
-behaviour). Arduino core "esp32" by Espressif 3.3.12; board settings in `sketch.yaml`. 1.12 MB = 57 % of the 1.9 MB app slot.
+Firmware: `maxxfan.ino` **v4**: v3.1 plus the **FOC board** (`S:\aiCAD\maxxfan_bldc\pcb\foc_board`) as a fourth fan
+wiring, section 9. Wi-Fi and updates are in `../libraries/vannet` (shared with the hub), the motor chip driver in
+`../libraries/mcf8316`. Arduino core "esp32" by Espressif 3.3.12; board settings in `sketch.yaml`. 1.17 MB = 59 % of the
+1.9 MB app slot.
 
 What it does:
 * **Lid** (DRV8871): open / close / stop / nudge from the phone page, the BOOT button, an optional panel button, or USB
   serial. Timed moves (no position sensor), calibrated on the page.
-* **Fan** (aqx BLDC board, through the buffer): speed, exhaust / intake, from the phone **and** the knob + switch;
-  whichever you touched last wins. Only runs with the lid open.
+* **Fan**: speed, exhaust / intake, from the phone **and** the knob + switch; whichever you touched last wins. Only runs
+  with the lid open. Either through the aqx BLDC board (buffer) or, on the FOC board, the MCF8316D motor chip over I2C.
 * **Wi-Fi**: joins the van router (Starlink), so the phone stays on it: **http://maxxfan.local**. Its own **MaxxFan**
   hotspot is a fallback when the router is off.
 * **Updates over Wi-Fi** from the phone or a PC, with automatic rollback.
@@ -47,6 +49,7 @@ Pick the stage on the setup page (**http://maxxfan.local/setup**, section 6); th
 | buffer built | buffer + ESP ribbon in the aqx plug; H11 unplugged | **Phone** | the phone |
 | + panel port | as above, plus H11 in the new **panel port** (section 3) | **Phone + knob** | knob **and** phone, whichever was touched last |
 | ESP dead (limp home) | ribbon out of the aqx plug, H11 into it | (any) | the knob, no ESP; the lid only by hand |
+| **FOC board** | the FOC board replaces the aqx, buffer, dividers and lid module; H11 in its panel socket J3 | **FOC board** (picked by itself, section 9) | knob **and** phone, as Phone + knob |
 
 In **Phone + knob**:
 * Turning the knob (5 % or more) or flipping the direction switch hands the fan to the panel; it then follows the knob.
@@ -103,6 +106,16 @@ Copy the repo's `libraries\vannet` folder into `Documents\Arduino\libraries` onc
 
 ### If the upload fails ("No serial data received", "Failed to connect")
 **Hold BOOT, tap RESET (or plug in USB while holding BOOT), release BOOT**, upload again, tap RESET after it finishes.
+
+### From a laptop with nothing installed (browser)
+1. GitHub > **Actions** > the latest **build** run > download **maxxfan-usb-full-image** and unzip it:
+   `maxxfan.ino.merged.bin` (4 MB).
+2. In Chrome or Edge open **https://espressif.github.io/esptool-js/**, **Connect**, pick the SuperMini's port ("USB
+   JTAG/serial debug unit"; if nothing shows, use the BOOT / RESET trick above).
+3. Flash Address **0x0**, choose `maxxfan.ino.merged.bin`, **Program**. When it's done, tap RESET or replug.
+
+This writes the whole flash, so the ESP **starts from defaults**: the MaxxFan hotspot again (section 5), and the lid
+needs calibrating again. `arduino-cli upload` (above) and updates over Wi-Fi (section 7) keep all that.
 
 ## 5. First use
 
@@ -171,12 +184,72 @@ private networks (the ESP connects back to the PC). If `maxxfan.local` doesn't r
 
 | request | does |
 |---|---|
-| `GET /api/status` | JSON: `state`, `pos` (lid %, -1 unknown), `fan_mode` (0 knob only, 1 phone, 2 phone + knob), `fan` (requested %), `fan_out` (running %), `dir` (`fwd` = exhaust / `rev`), `fan_src` (`knob` / `phone`), `fan_wait` (`lid` / `reverse` / ""), `m_hz`, `knob`, `knob_mv`, `wifi_*`, `ap`, `fw` |
+| `GET /api/status` | JSON: `state`, `pos` (lid %, -1 unknown), `fan_mode` (0 knob only, 1 phone, 2 phone + knob, 3 FOC board), `fan` (requested %), `fan_out` (running %), `dir` (`fwd` = exhaust / `rev`), `fan_src` (`knob` / `phone`), `fan_wait` (`lid` / `reverse` / ""), `m_hz` (FOC board: motor rev/s from FG), `knob`, `knob_mv`, `wifi_*`, `ap`, `fw`. FOC board also `foc` {`up`, `state`, `rpm`, `want_rpm`, `sent_rpm`, `vm`, `bus_a`, `phase_a`, `fault`, `eeprom` (`board` / `other` / `unknown`)}, `top_rpm`, `fan_swap` |
 | `GET /api/lid?cmd=open\|close\|stop\|jog_open\|jog_close\|set_closed[&ms=500]` | lid |
-| `GET /api/fan?speed=0..100&dir=fwd\|rev` | fan, as a phone request (opens the lid if needed) |
-| `GET /api/settings?travel=&over=&ramp=&invert=0\|1` | lid calibration |
+| `GET /api/fan?speed=0..100&dir=fwd\|rev` | fan, as a phone request (opens the lid if needed). FOC board: `rpm=200..1500` instead of `speed` |
+| `GET /api/settings?travel=&over=&ramp=&invert=0\|1` | lid calibration; FOC board also `top_rpm=400..1500`, `fan_swap=0\|1` |
+| `GET /api/foc?cmd=clear` | FOC board: clear the motor chip's faults |
+| `POST /api/foc_save` | FOC board: write the knob fallback into the motor chip's EEPROM (basic auth; fan stopped) |
 | `POST /api/wifi` `ssid`, `pass` / `forget=1` | van router |
 | `GET /api/scan` | `{"busy":true}` until `{"nets":[...]}` |
 | `GET /setup`, `POST /api/setup` `fanmode`, `ap_pass`, `ota_pass` | setup (basic auth), restarts |
 | `POST /update` multipart `.bin` | firmware (basic auth) |
 | UDP/TCP 3232 | ArduinoOTA / espota, password = setup password |
+
+## 9. The FOC board (fan mode 3)
+
+The FOC board (`S:\aiCAD\maxxfan_bldc\pcb\foc_board`, rev A) replaces the aqx, the buffer, the dividers and the lid
+module. Its TI **MCF8316D** runs the fan motor sensorless (field-oriented control, much quieter than the aqx), with
+Minuet's profile for this exact motor in a MaxxFan Deluxe (`../libraries/mcf8316/src/FocMotor.cpp`). The ESP plugs into
+the board's sockets and sets the speed and direction over I2C. These go into the chip's RAM only, so a power cycle always
+starts from the chip's own EEPROM.
+
+| ESP pin | FOC board |
+|---|---|
+| G0 / G1 | MCF8316D I2C SCL / SDA (address 0x01) |
+| G3 | FG: one pulse per motor revolution (`m_hz`) |
+| G4 | knob divider, which is also the chip's SPEED pin (input only) |
+| G7 | direction-switch divider, also the chip's DIR pin |
+| G10 | nFAULT (the board's red LED) |
+| G5 / G6, G20, G21 | lid DRV8871 IN2 / IN1, panel lid button, DS18B20 (not read yet) |
+
+**Picked by itself**: at start-up v4 looks for the chip on G0 / G1. If it answers, the fan mode becomes **FOC board**
+and stays that way. (The chip runs from the same 12 V as the ESP; with the ESP on USB and the 12 V off, it isn't found.)
+
+### First run, with the motor and lid installed
+
+1. **Get v4 on the ESP**, keeping its settings: http://maxxfan.local/setup > Firmware update > `maxxfan.ino.bin` (section
+   7), if it runs v3.x. Otherwise use USB (section 4).
+2. **Fan page**: the Fan box shows a **motor** line. Expect `motor: IDLE | 0 rpm | 12.x V`. If it says `not answering`,
+   the 12 V is off or the chip didn't start; the serial console (`?`) says more.
+3. **Lid**: check its direction and calibrate it (section 5) if that isn't done yet. The fan only runs with the lid fully
+   open.
+4. **run at 400 rpm, exhaust**. The lid opens first if needed. You hear a small tick (the chip finding the rotor), then it
+   spins up. The motor line goes `IPD`, `OPEN_LOOP`, `CLOSED_LOOP_UNALIGNED`, `CLOSED_LOOP_ALIGNED`, and `rpm` settles near
+   400. `FG` should agree.
+5. **Direction**: if exhaust blows in, swap two of the three motor wires in J2 (that fixes the knob fallback too). The
+   **swap fan direction** box does it in software, for the ESP only.
+6. **Speeds**: try 600, 800, 1000, 1200 rpm and the % buttons. 100 % = **top speed** (1200 rpm, Minuet's top; up to 1500).
+   1 % = 200 rpm, the slowest it runs sensorless. Listen for hunting or buzzing.
+7. **Knob**: the knob and the phone both work, as in Phone + knob (section 2).
+8. **Check the real speed** once, with a phone tachometer or strobe app. If it's half or double the page's rpm, the motor's
+   pole count (4 assumed) is wrong.
+9. **When it all runs well**: setup page > **Save the knob fallback into the motor chip**, once. After that the knob and
+   switch run the fan with the ESP dead or unplugged (limp home; the lid only by hand), to about 1500 rpm at the top.
+   This writes the chip's EEPROM (about 20 000 writes in its life), and only if it differs. Until it's saved, a dead
+   ESP means no fan.
+
+A fault turns the motor line red (and the board's red LED on). The chip retries 5 times, 1 s apart, then stops.
+**clear the motor fault**, or any new fan command, retries it.
+
+| fault | likely |
+|---|---|
+| `NO_MTR` | a motor wire isn't making contact in J2 |
+| `IPD_T1_FAULT`, `IPD_T2_FAULT`, `IPD_FREQ_FAULT` | start-up rotor detection failed: a loose wire, or the blade is stuck |
+| `MTR_LCK`, `ABN_SPEED`, `ABN_BEMF` | lost track of the rotor (stall, or a jerk at start-up). Note the speed it happened at |
+| `LOCK_ILIMIT`, `HW_LOCK_ILIMIT` | over 4.5 / 5 A: something's binding, or a short |
+| `MTR_UNDER_VOLTAGE` | VM under 8 V: a weak supply or thin wiring |
+| `OTW`, `OTS` | the chip is hot |
+
+The USB bench-test sketch `../foc_test` drives the same chip from a serial console. It has no Wi-Fi, so after flashing it
+the ESP needs USB again to get back to maxxfan.
