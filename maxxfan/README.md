@@ -202,6 +202,7 @@ private networks (the ESP connects back to the PC). If `maxxfan.local` doesn't r
 | `GET /api/lid?cmd=open\|close\|stop\|jog_open\|jog_close\|set_closed[&ms=500]` | lid |
 | `GET /api/fan?speed=0..100&dir=fwd\|rev` | fan, as a phone request (opens the lid if needed). FOC board: `rpm=200..1500` instead of `speed` |
 | `GET /api/settings?travel=&over=&ramp=&invert=0\|1` | lid calibration; FOC board also `top_rpm=400..1500`, `fan_swap=0\|1` |
+| `GET /api/history` | FOC board: the last 10 min of motor readings, one every 2 s, oldest first: `dt` (s), `age` (s since the newest), `rpm`, `set` (rpm asked for), `vm` (V x 10), `bus` (mA); `null` where the chip wasn't answering. Kept in RAM only |
 | `GET /api/foc?cmd=clear` | FOC board: clear the motor chip's faults |
 | `POST /api/foc_save` | FOC board: write the knob fallback into the motor chip's EEPROM (basic auth; fan stopped) |
 | `POST /api/wifi` `ssid`, `pass` / `forget=1` | van router |
@@ -234,7 +235,9 @@ and stays that way. (The chip runs from the same 12 V as the ESP; with the ESP o
 
 1. **Get v4 on the ESP**, keeping its settings: http://maxxfan.local/setup > Firmware update > `maxxfan.ino.bin` (section
    7), if it runs v3.x. Otherwise use USB (section 4).
-2. **Fan page**: the bottom line shows `motor stopped · 12.x V`; **Settings > Motor** has the details (state, rpm, supply,
+2. **Fan page**: the **Motor** card graphs speed, current (with watts) and supply voltage over the last 2 or 10 minutes;
+   drag a finger along it to read any moment, or open **Readings** for the numbers. The bottom line shows
+   `motor stopped · 12.x V`; **Settings > Motor** has the details (state, rpm, supply,
    faults, whether the knob fallback is saved). A red box saying `Motor chip not answering` means the 12 V is off or the
    chip didn't start; the serial console (`?`) says more.
 3. **Lid**: check its direction and calibrate it (section 5) if that isn't done yet. The fan only runs with the lid fully

@@ -15,7 +15,8 @@
 // v4.1 (2026-11-10): the knob runs the lid. Its click, held 3 s, closes the lid; just past the click is vent (lid open,
 //   fan off); beyond that, fan speed (Phone + knob and FOC board). New phone page: one screen with the lid, a 10-step
 //   speed slider (Minuet's speeds, scaled to the top speed), exhaust / intake and off; calibration, fan settings, motor
-//   details and Wi-Fi under Settings; plain-language motor faults. Fixes: a fan request while the lid was closing never
+//   details and Wi-Fi under Settings; plain-language motor faults. FOC board: a Motor card graphs speed, current and
+//   supply voltage (the last 2 or 10 min; GET /api/history = the last 10 min, one sample every 2 s, in RAM). Fixes: a fan request while the lid was closing never
 //   reopened it; reversing the lid mid-move timed the new move from the old start position.
 //
 // Arduino core "esp32" by Espressif 3.x (3.3.12). Board settings are in sketch.yaml: ESP32C3 Dev Module, USB CDC On Boot
@@ -380,6 +381,32 @@ String focSaveEeprom() {
   return msg;
 }
 
+// ------------------------------------------------------------------ motor history for the phone page's graph (FOC board)
+// One sample every 2 s, the last 10 min, in RAM only (2.4 KB). GET /api/history hands it to the page, which then adds the
+// live readings from /api/status itself.
+const int HIST_N = 300;
+const uint32_t HIST_DT_MS = 2000;
+struct HistSample { int16_t rpm; int16_t set; uint16_t vm10; int16_t busMa; };   // vm10 = 0: the chip wasn't answering
+HistSample hist[HIST_N];
+int histHead = 0, histCount = 0;      // next slot / samples stored
+uint32_t histLastMs = 0;
+
+void histLoop() {
+  uint32_t now = millis();
+  if (now - histLastMs < HIST_DT_MS) return;
+  histLastMs = now;
+  HistSample s = {0, 0, 0, 0};
+  if (focUp) {
+    s.rpm = (int16_t)constrain(lroundf(fabsf(focRpm)), 0L, 32767L);
+    s.set = (int16_t)constrain(lroundf(focSentRpm), 0L, 32767L);
+    s.vm10 = (uint16_t)constrain(lroundf(focVm * 10.0f), 1L, 65535L);
+    s.busMa = (int16_t)constrain(lroundf(focBusA * 1000.0f), -32768L, 32767L);
+  }
+  hist[histHead] = s;
+  histHead = (histHead + 1) % HIST_N;
+  if (histCount < HIST_N) histCount++;
+}
+
 void lidEnsureOpen() {                // open the lid unless it's open or already opening (reverses a close)
   if (lidMove == LID_OPENING) return;
   if (lidMove == LID_IDLE && lidPos >= 95.0f) return;
@@ -531,6 +558,16 @@ a{color:var(--acc)}
 input[type=number],input[type=text],input[type=password],select{font:inherit;font-size:16px;padding:9px;border-radius:8px;border:1px solid var(--rule);background:var(--bg);color:var(--fg);width:100%}
 label.ck{display:flex;gap:10px;align-items:center;font-size:15px}label.ck input{width:20px;height:20px;accent-color:var(--acc)}
 .f{display:grid;grid-template-rows:1fr auto;gap:4px;font-size:14px;color:var(--mut)}
+.gp{display:grid;gap:2px}
+.gh{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:13px;color:var(--mut)}
+.gh b{color:var(--fg);font-size:15px;font-weight:600;font-variant-numeric:tabular-nums;text-align:right}
+canvas{width:100%;height:60px;display:block;touch-action:pan-y}
+.gx{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--mut);padding-left:38px;margin-top:-6px}
+#gtime{color:var(--fg);font-weight:600}
+.seg.mini{border-radius:9px}.seg.mini button{font-size:13px;padding:5px 10px;white-space:nowrap}
+summary{font-size:13px;color:var(--acc);cursor:pointer}
+table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums;margin-top:6px}
+th,td{text-align:right;padding:4px 6px;border-top:1px solid var(--rule)}th:first-child,td:first-child{text-align:left}th{color:var(--mut);font-weight:500}
 dl{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;margin:0;font-size:14px}dt{color:var(--mut)}dd{margin:0;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 </style></head><body><div class="w">
 <header><h1>MaxxFan</h1><span id="net" class="pill">...</span></header>
@@ -550,6 +587,14 @@ dl{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;margin:0;font-size:1
 <button onclick="fan(0)">Off</button>
 </div>
 <div id="fsub" class="sub"></div>
+</section>
+<section class="card" id="gcard" hidden>
+<div class="hd"><h2>Motor</h2><div class="seg mini"><button id="w2" onclick="setWin(120)">2 min</button><button id="w10" class="on" onclick="setWin(600)">10 min</button></div></div>
+<div class="gp"><div class="gh"><span>Speed</span><b id="gv0">-</b></div><canvas id="g0" aria-label="Motor speed over time"></canvas></div>
+<div class="gp"><div class="gh"><span>Current</span><b id="gv1">-</b></div><canvas id="g1" aria-label="Supply current over time"></canvas></div>
+<div class="gp"><div class="gh"><span>Supply</span><b id="gv2">-</b></div><canvas id="g2" aria-label="Supply voltage over time"></canvas></div>
+<div class="gx"><span id="gx0">10 min ago</span><span id="gtime"></span><span>now</span></div>
+<details id="gtab" ontoggle="table()"><summary>Readings</summary><table><thead><tr><th>when</th><th>rpm</th><th>A</th><th>V</th></tr></thead><tbody id="gtb"></tbody></table></details>
 </section>
 <div id="alrt" class="alrt" hidden><div id="altx"></div><button id="altb" onclick="clr()" hidden>Clear the motor fault</button></div>
 <div class="foot"><span id="foot"></span><a href="#settings">Settings &rsaquo;</a></div>
@@ -611,6 +656,48 @@ const WHY=[[/NO_MTR/,'a motor wire is loose'],[/IPD_/,'it could not find the rot
 function why(t){let w=WHY.filter(x=>x[0].test(t)).map(x=>x[1]);return w.length?w.join(', ')+'.':''}
 $('spd').oninput=()=>{hold=Date.now()+2500;let n=+$('spd').value;$('fanv').textContent=n?'speed '+n+(R&&R.steps?' · '+R.steps[n-1]+' rpm':''):'off'};
 $('spd').onchange=()=>fan(+$('spd').value);
+const PAN=[{k:'rpm',u:'rpm',z:1,f:v=>Math.round(v)},{k:'bus',u:'A',z:1,f:v=>v.toFixed(2)},{k:'vm',u:'V',z:0,f:v=>v.toFixed(1)}];
+function tick(v){return String(+v.toFixed(2))}
+let H=[],WIN=600,hv=null;
+function css(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim()}
+function nice(x){let p=Math.pow(10,Math.floor(Math.log10(x))),m=x/p;return([1,1.2,1.5,2,2.5,3,4,5,6,8,10].find(s=>m<=s))*p}
+function ago(ms){let s=Math.max(0,Math.round(ms/1000));return s<60?s+' s ago':Math.floor(s/60)+':'+String(s%60).padStart(2,'0')+' ago'}
+async function hist(){try{let r=await (await fetch('/api/history')).json(),now=Date.now(),n=r.rpm.length,a=[];
+ for(let i=0;i<n;i++)a.push({t:now-(r.age+(n-1-i)*r.dt)*1000,rpm:r.rpm[i],set:r.set[i],vm:r.vm[i]==null?null:r.vm[i]/10,bus:r.bus[i]==null?null:r.bus[i]/1000});
+ H=a.concat(H.filter(p=>p.t>now));draw()}catch(e){}}
+function setWin(s){WIN=s;$('w2').className=s==120?'on':'';$('w10').className=s==600?'on':'';$('gx0').textContent=s==120?'2 min ago':'10 min ago';draw()}
+const GL=38;
+function draw(){if(!R||!R.foc||$('gcard').hidden)return;
+ let now=Date.now(),t0=now-WIN*1000,pts=H.filter(p=>p.t>=t0),hp=null;
+ if(hv!=null){let b=1e18;pts.forEach(p=>{let d=Math.abs(p.t-hv);if(d<b){b=d;hp=p}})}
+ $('gtime').textContent=hp?ago(now-hp.t):'';
+ let acc=css('--acc'),rule=css('--rule'),mut=css('--mut'),card=css('--card');
+ PAN.forEach((P,i)=>{let c=$('g'+i),w=c.clientWidth,h=c.clientHeight,dpr=window.devicePixelRatio||1;if(!w)return;
+  if(c.width!=Math.round(w*dpr)||c.height!=Math.round(h*dpr)){c.width=Math.round(w*dpr);c.height=Math.round(h*dpr)}
+  let x=c.getContext('2d');x.setTransform(dpr,0,0,dpr,0,0);x.clearRect(0,0,w,h);
+  let vals=pts.map(p=>p[P.k]).filter(v=>v!=null),lo,hi;
+  if(P.z){lo=0;hi=nice(Math.max(P.k=='rpm'?400:0.5,...vals)*1.05)}
+  else{let mn=vals.length?Math.min(...vals):11.5,mx=vals.length?Math.max(...vals):13.5,mid=(mn+mx)/2,sp=Math.max(2,(mx-mn)*1.2);lo=Math.floor((mid-sp/2)*2)/2;hi=Math.ceil((mid+sp/2)*2)/2}
+  let L=GL,Rr=w-6,T=6,B=h-6,X=t=>L+(t-t0)/(WIN*1000)*(Rr-L),Y=v=>B-(v-lo)/(hi-lo)*(B-T);
+  x.strokeStyle=rule;x.lineWidth=1;x.beginPath();[T,B].forEach(y=>{let yy=Math.round(y)+.5;x.moveTo(L,yy);x.lineTo(Rr,yy)});x.stroke();
+  x.fillStyle=mut;x.font='11px -apple-system,system-ui,sans-serif';x.textAlign='right';x.textBaseline='middle';
+  x.fillText(tick(hi),L-6,T);x.fillText(tick(lo),L-6,B);
+  x.strokeStyle=acc;x.lineWidth=2;x.lineJoin='round';x.lineCap='round';x.beginPath();let pen=false;
+  pts.forEach(p=>{let v=p[P.k];if(v==null){pen=false;return}let px=X(p.t),py=Y(v);if(pen)x.lineTo(px,py);else x.moveTo(px,py);pen=true});x.stroke();
+  let last=null;for(let j=pts.length-1;j>=0;j--)if(pts[j][P.k]!=null){last=pts[j];break}
+  let d=hp||last;
+  if(hp){let hx=Math.round(X(hp.t))+.5;x.strokeStyle=mut;x.lineWidth=1;x.beginPath();x.moveTo(hx,T);x.lineTo(hx,B);x.stroke()}
+  if(d&&d[P.k]!=null){let px=X(d.t),py=Y(d[P.k]);x.fillStyle=card;x.beginPath();x.arc(px,py,6,0,7);x.fill();x.fillStyle=acc;x.beginPath();x.arc(px,py,4,0,7);x.fill()}
+  let v=d?d[P.k]:null,t='-';
+  if(v!=null){t=P.f(v)+' '+P.u;if(P.k=='rpm'&&d.set!=null)t+=' (asked '+Math.round(d.set)+')';if(P.k=='bus'&&d.vm!=null)t+=' · '+Math.round(v*d.vm)+' W'}
+  $('gv'+i).textContent=t})}
+function hov(e){let r=e.currentTarget.getBoundingClientRect(),f=(e.clientX-r.left-GL)/(r.width-6-GL);hv=f<0||f>1?null:Date.now()-WIN*1000*(1-f);draw()}
+['g0','g1','g2'].forEach(id=>{let c=$(id);c.onpointermove=hov;c.onpointerdown=hov;c.onpointerleave=()=>{hv=null;draw()};c.onpointercancel=c.onpointerleave});
+function table(){if(!$('gtab').open)return;let tb=$('gtb'),now=Date.now(),last=null,n=0;tb.textContent='';
+ for(let j=H.length-1;j>=0&&n<20;j--){let p=H[j];if(last!=null&&last-p.t<15000)continue;last=p.t;n++;
+  let row=tb.insertRow();[ago(now-p.t),p.rpm==null?'-':Math.round(p.rpm),p.bus==null?'-':p.bus.toFixed(2),p.vm==null?'-':p.vm.toFixed(1)].forEach(c=>{row.insertCell().textContent=c})}}
+window.addEventListener('resize',draw);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState=='visible')hist()});
 function show(r){R=r;
  let n=$('net');n.textContent=r.wifi_up?r.wifi_ssid:r.ap?'MaxxFan hotspot':'no Wi-Fi';n.className='pill'+(r.wifi_up?' ok':'');
  let p=r.pos,lv=r.state=='opening'?'opening':r.state=='closing'?'closing':p<0?'position unknown':p>=95?'open':p<=0?'closed':Math.round(p)+'% open';
@@ -635,6 +722,9 @@ function show(r){R=r;
  let w=!r.wifi_ssid?'No router saved.':r.wifi_up?'On '+r.wifi_ssid+' ('+r.wifi_ip+', '+r.wifi_rssi+' dBm).':'Trying '+r.wifi_ssid+' ...';
  w+=r.ap?' Hotspot on.':' Hotspot off.';if(r.wifi_up&&r.ap&&r.ap_clients)w+=' Switch your phone to '+r.wifi_ssid+' and open http://maxxfan.local';
  $('wnet').textContent=w;
+ $('gcard').hidden=!f||!$('vset').hidden;
+ if(f){let now=Date.now();H.push({t:now,rpm:f.up?Math.abs(f.rpm):null,set:f.up?f.sent_rpm:null,vm:f.up?f.vm:null,bus:f.up?f.bus_a:null});
+  while(H.length&&H[0].t<now-600000)H.shift();draw();table()}
  if(first){first=false;$('tr').value=r.travel;$('ov').value=r.over;$('inv').checked=r.invert;$('ss').value=r.wifi_ssid;
   if(f){$('toprpm').value=r.top_rpm;$('swp').checked=r.fan_swap}}}
 async function wifi(p){let r=await fetch('/api/wifi',{method:'POST',body:new URLSearchParams(p)});$('wm').textContent=r.ok?'':await r.text();g('/api/status')}
@@ -645,7 +735,7 @@ async function scan(){$('wm').textContent='Scanning ...';for(let i=0;i<15;i++){t
   r.nets.forEach(x=>{let o=document.createElement('option');o.value=o.textContent=x;s.appendChild(o)});s.hidden=false;$('wm').textContent='';return}}catch(e){}
  await new Promise(z=>setTimeout(z,1000))}$('wm').textContent='Scan failed: type the name.'}
 function route(){let s=location.hash=='#settings';$('vhome').hidden=s;$('vset').hidden=!s;window.scrollTo(0,0)}
-window.onhashchange=route;route();g('/api/status');setInterval(()=>g('/api/status'),1000);
+window.onhashchange=route;route();hist();g('/api/status');setInterval(()=>g('/api/status'),1000);
 </script></body></html>)HTML";
 
 const char SETUP_PAGE[] PROGMEM = R"HTML(<!doctype html><html><head><meta charset="utf-8">
@@ -754,6 +844,26 @@ void apiFan() {                       // speed 0-100 (or, FOC board, rpm=200-150
   if (cfg.fanMode == FAN_FOC && server.hasArg("rpm")) speed = rpmToPct(constrain(server.arg("rpm").toFloat(), 0.0f, (float)cfg.topRpm));
   setFan(speed, server.arg("dir") != "rev", false);
   apiStatus();
+}
+
+void apiHistory() {                   // FOC board: {"dt":2,"age":s,"rpm":[..],"set":[..],"vm":[V x10],"bus":[mA]}, oldest first
+  vannet::pageSeen();
+  String j;
+  j.reserve(histCount * 22 + 100);
+  j = "{\"dt\":" + String(HIST_DT_MS / 1000) + ",\"age\":" + String((millis() - histLastMs) / 1000.0f, 1);
+  const char* keys[] = {"rpm", "set", "vm", "bus"};
+  for (int k = 0; k < 4; k++) {
+    j += ",\""; j += keys[k]; j += "\":[";
+    for (int i = 0; i < histCount; i++) {
+      const HistSample& s = hist[(histHead - histCount + i + HIST_N) % HIST_N];
+      if (i) j += ',';
+      if (!s.vm10) { j += "null"; continue; }   // a gap: the chip wasn't answering
+      j += String(k == 0 ? s.rpm : k == 1 ? s.set : k == 2 ? (int)s.vm10 : s.busMa);
+    }
+    j += ']';
+  }
+  j += '}';
+  sendJson(j);
 }
 
 void apiFoc() {                       // FOC board: cmd=clear (the chip's faults)
@@ -887,6 +997,7 @@ void setup() {
   server.on("/api/settings", apiSettings);
   server.on("/api/fan", apiFan);
   server.on("/api/foc", apiFoc);
+  server.on("/api/history", apiHistory);
   server.on("/api/foc_save", HTTP_POST, apiFocSave);
   server.on("/api/setup", HTTP_POST, apiSetup);
   server.on("/setup", HTTP_GET, setupPage);
@@ -909,7 +1020,7 @@ void loop() {
   uint32_t now = millis();
   if (fanEsp()) {
     if (now - lastM >= 1000) { noInterrupts(); uint32_t p = mPulses; mPulses = 0; interrupts(); mHz = p * 1000.0f / (now - lastM); lastM = now; }
-    if (cfg.fanMode == FAN_FOC) focLoop();
+    if (cfg.fanMode == FAN_FOC) { focLoop(); histLoop(); }
     fanApply();
   }
   // LED: solid while the lid moves, short blink every 2 s when idle
