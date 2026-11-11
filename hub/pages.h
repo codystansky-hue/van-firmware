@@ -16,6 +16,22 @@ h2{font-size:13px;font-weight:600;color:var(--mut);margin:0 0 4px;text-transform
 .bar{height:8px;border-radius:4px;background:var(--line);overflow:hidden;margin:6px 0 4px}.bar i{display:block;height:100%;background:var(--bar)}
 .b{display:flex;gap:6px;margin-top:8px}.b button{flex:1;font-size:17px;padding:12px 2px;border-radius:10px;border:1px solid var(--line);background:var(--btn);color:var(--fg)}
 .b button.on{border-color:var(--bar);font-weight:600}summary{font-weight:600;padding:2px 0}
+[hidden]{display:none!important}
+input[type=range]{accent-color:var(--bar);padding:0;border:0;background:none;height:34px;margin:8px 0 0}
+.tk{display:flex;justify-content:space-between;font-size:12px;color:var(--mut);padding:0 5px;margin-top:-4px;font-variant-numeric:tabular-nums}
+.flt{display:flex;gap:8px;align-items:center;justify-content:space-between;color:var(--bad);font-size:14px;margin:6px 0}
+.flt button{flex:none;font-size:14px;padding:8px 10px;border-radius:8px;border:1px solid var(--bad);background:var(--btn);color:var(--fg)}
+.gt{display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding-top:8px;border-top:1px solid var(--line)}
+.sg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.sg button{font-size:13px;padding:5px 10px;border:0;background:var(--btn);color:var(--fg);white-space:nowrap}
+.sg button+button{border-left:1px solid var(--line)}.sg button.on{font-weight:600;box-shadow:inset 0 -2px var(--bar)}
+.gh{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:13px;color:var(--mut);margin-top:6px}
+.gh b{color:var(--fg);font-size:15px;font-weight:600;font-variant-numeric:tabular-nums;text-align:right}
+canvas{width:100%;height:56px;display:block;touch-action:pan-y}
+.gx{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--mut);padding-left:38px;margin-top:2px}
+#mgt{color:var(--fg);font-weight:600}
+table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
+th,td{text-align:right;padding:4px 6px;border-top:1px solid var(--line)}th:first-child,td:first-child{text-align:left}th{color:var(--mut);font-weight:500}
 input,select{font-size:16px;width:100%;box-sizing:border-box;margin:4px 0;padding:7px;border-radius:8px;border:1px solid var(--line);background:var(--btn);color:var(--fg)}
 a{color:inherit}
 </style></head><body>
@@ -23,8 +39,20 @@ a{color:inherit}
 <div class="c"><h2>Solar</h2><div id="sol">...</div></div>
 <div class="c"><h2>Water</h2><div id="wat">...</div></div>
 <div class="c"><h2>MaxxFan</h2><div id="fan">...</div>
+<div id="mflt" class="flt" hidden><span id="mfltx"></span><button onclick="mf('clear=1')">Clear the fault</button></div>
 <div class="b"><button onclick="mf('lid=open')">Open</button><button onclick="mf('lid=close')">Close</button><button onclick="mf('lid=stop')">Stop</button></div>
-<div id="fanb" hidden><div class="b" id="sp"></div><div class="b" id="dr"></div></div></div>
+<div id="fanb" hidden>
+<input type="range" id="mspd" min="0" max="10" step="1" value="0" aria-label="Fan speed, 0 is off">
+<div class="tk"><span>off</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>10</span></div>
+<div class="b" id="dr"></div></div>
+<div id="mg" hidden>
+<div class="gt"><span class="m">Motor</span><span class="sg"><button id="mw2" onclick="mwin(120)">2 min</button><button id="mw10" class="on" onclick="mwin(600)">10 min</button></span></div>
+<div class="gh"><span>Speed</span><b id="mv0">-</b></div><canvas id="mg0" aria-label="MaxxFan motor speed over time"></canvas>
+<div class="gh"><span>Current</span><b id="mv1">-</b></div><canvas id="mg1" aria-label="MaxxFan supply current over time"></canvas>
+<div class="gh"><span>Supply</span><b id="mv2">-</b></div><canvas id="mg2" aria-label="MaxxFan supply voltage over time"></canvas>
+<div class="gx"><span id="mgx0">10 min ago</span><span id="mgt"></span><span>now</span></div>
+<details id="mtab" ontoggle="mtable()"><summary class="m">Readings</summary><table><thead><tr><th>when</th><th>rpm</th><th>A</th><th>V</th></tr></thead><tbody id="mtb"></tbody></table></details>
+</div></div>
 <details class="c"><summary>Wi-Fi</summary><div class="m" id="net">...</div>
 <div class="m">Save the van router (Starlink) here and keep the phone on it: <b>http://van.local</b>. The VanHub hotspot then
 turns off, and comes back by itself when the router is off for 20 s.</div>
@@ -72,16 +100,76 @@ function water(r){let w=r.water;
   :'<div class="big">'+vol(left)+'<small> left &middot; '+n(p,0)+' %</small></div>'+bar(p))
   +'<div class="m">'+vol(w.used)+' used since the tank was filled'+(w.lpm>0.05?' &middot; running '+(U=='us'?n(w.lpm/3.785,1)+' gal':n(w.lpm,1)+' L')+'/min':'')+'</div>'
   +'<div class="b"><button onclick="filled()">Tank filled</button></div>'}
+const ZN={off:'at its click',vent:'at vent',fan:'up'};
+const WHY=[[/NO_MTR/,'a motor wire is loose'],[/IPD_/,'it could not find the rotor at start-up'],[/MTR_LCK|ABN_SPEED|ABN_BEMF/,'it lost track of the rotor'],
+ [/LOCK_ILIMIT/,'too much current'],[/UNDER_VOLTAGE/,'the 12 V dropped under 8 V'],[/OVER_VOLTAGE|OVP/,'the supply went over 18 V'],[/OTW|OTS/,'the motor chip is hot']];
+function why(t){let w=WHY.filter(x=>x[0].test(t)).map(x=>x[1]);return w.length?w.join(', ')+'.':'a fault.'}
+let MS=null,mhold=0,MH=[],MWIN=600,mhv=null,mhistTried=false;
+function mstep(s){if(!s.fan)return 0;
+ if(s.steps&&s.foc){let b=1,bd=1e9;s.steps.forEach((v,i)=>{let d=Math.abs(v-s.foc.want_rpm);if(d<bd){bd=d;b=i+1}});return b}
+ return Math.min(10,Math.max(1,Math.round(s.fan/10)))}
 function fan(r){let m=r.maxxfan;
- if(!m.ok){$('fan').innerHTML='<div class="m warn">'+esc(m.err)+'</div>';$('fanb').hidden=true;return}
- let s=m.s,sp=s.fan_out||s.fan;
+ if(!m.ok){$('fan').innerHTML='<div class="m warn">'+esc(m.err)+'</div>';$('fanb').hidden=true;$('mg').hidden=true;$('mflt').hidden=true;return}
+ let s=m.s,f=s.foc,st=mstep(s),sp=s.fan;MS=s;
  let t='lid '+s.state+(s.pos<0?' (position unknown)':' &middot; ~'+Math.round(s.pos)+'% open');
- let f=s.fan_mode==0?'fan: knob only':'fan '+(sp?sp+'% '+(s.dir=='fwd'?'exhaust':'intake'):'off')
-  +(s.fan_wait?' ('+(s.fan_wait=='lid'?'waiting for the lid':'reversing')+')':'')+(s.fan_mode>=2?' &middot; set by '+s.fan_src:'');
- $('fan').innerHTML='<div class="big" style="font-size:24px">'+t+'</div><div class="m">'+f+old(m.age>10?m.age:null)+'</div>';
- $('fanb').hidden=s.fan_mode==0;fanSet={speed:s.fan,dir:s.dir};
- $('sp').innerHTML=[0,30,60,100].map(v=>'<button class="'+(s.fan==v?'on':'')+'" onclick="mf(\'speed='+v+'&dir='+s.dir+'\')">'+(v?v+'%':'off')+'</button>').join('');
- $('dr').innerHTML=['fwd','rev'].map(d=>'<button class="'+(s.dir==d?'on':'')+'" onclick="mf(\'speed='+(s.fan||50)+'&dir='+d+'\')">'+(d=='fwd'?'exhaust':'intake')+'</button>').join('')}
+ let fl=s.fan_mode==0?'fan: knob only':'fan '+(sp?(s.steps&&f?'speed '+st+' &middot; '+f.want_rpm+' rpm ':sp+'% ')+(s.dir=='fwd'?'exhaust':'intake'):'off')
+  +(s.fan_wait?' ('+(s.fan_wait=='lid'?'waiting for the lid':'reversing')+')':'')
+  +(s.fan_mode>=2?' &middot; set by '+s.fan_src+(s.knob_zone?', knob '+ZN[s.knob_zone]:''):'');
+ let ml=!f?'':f.up?'<div class="m">motor: '+(f.state=='IDLE'?'stopped':Math.round(f.rpm)+' rpm')+' &middot; '+n(f.bus_a,2)+' A &middot; '
+  +n(f.bus_a*f.vm,0)+' W &middot; '+n(f.vm,1)+' V</div>':'<div class="m warn">motor chip not answering (is the 12 V on?)</div>';
+ $('fan').innerHTML='<div class="big" style="font-size:24px">'+t+'</div><div class="m">'+fl+old(m.age>10?m.age:null)+'</div>'+ml;
+ let bad=!!(f&&f.up&&f.fault);$('mflt').hidden=!bad;
+ if(bad)$('mfltx').textContent='Motor stopped: '+why(f.fault)+' ('+f.fault.replace(/\|/g,', ')+')';
+ $('fanb').hidden=s.fan_mode==0;
+ if(Date.now()>mhold)$('mspd').value=st;
+ $('dr').innerHTML=['fwd','rev'].map(d=>'<button class="'+(s.dir==d?'on':'')+'" onclick="mf(\'speed='+(s.fan||0)+'&dir='+d+'\')">'+(d=='fwd'?'exhaust':'intake')+'</button>').join('');
+ $('mg').hidden=!f;
+ if(f){if(!mhistTried){mhistTried=true;mhist()}
+  let now=Date.now(),tt=now-m.age*1000,last=MH.length?MH[MH.length-1].t:0;
+  if(tt-last>1500)MH.push({t:tt,rpm:f.up?Math.abs(f.rpm):null,set:f.up?f.sent_rpm:null,vm:f.up?f.vm:null,bus:f.up?f.bus_a:null});
+  while(MH.length&&MH[0].t<now-600000)MH.shift();mdraw();mtable()}}
+$('mspd').oninput=()=>{mhold=Date.now()+4000};
+$('mspd').onchange=()=>{mhold=Date.now()+4000;let k=+$('mspd').value,d=MS&&MS.dir=='rev'?'rev':'fwd';
+ mf(!k?'speed=0&dir='+d:MS&&MS.steps&&MS.foc?'rpm='+MS.steps[k-1]+'&dir='+d:'speed='+k*10+'&dir='+d)};
+const MP=[{k:'rpm',u:'rpm',z:1,f:v=>Math.round(v)},{k:'bus',u:'A',z:1,f:v=>v.toFixed(2)},{k:'vm',u:'V',z:0,f:v=>v.toFixed(1)}],MGL=38;
+function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim()}
+function nice(x){let p=Math.pow(10,Math.floor(Math.log10(x))),q=x/p;return([1,1.2,1.5,2,2.5,3,4,5,6,8,10].find(s=>q<=s))*p}
+function tick(v){return String(+v.toFixed(2))}
+function ago(ms){let s=Math.max(0,Math.round(ms/1000));return s<60?s+' s ago':Math.floor(s/60)+':'+String(s%60).padStart(2,'0')+' ago'}
+async function mhist(){try{let q=await fetch('/api/maxxfan_history');if(!q.ok)return;let r=await q.json(),now=Date.now(),k=r.rpm.length,a=[];
+ for(let i=0;i<k;i++)a.push({t:now-(r.age+(k-1-i)*r.dt)*1000,rpm:r.rpm[i],set:r.set[i],vm:r.vm[i]==null?null:r.vm[i]/10,bus:r.bus[i]==null?null:r.bus[i]/1000});
+ let newest=a.length?a[a.length-1].t:0;MH=a.concat(MH.filter(p=>p.t>newest+1000));mdraw()}catch(e){}}
+function mwin(v){MWIN=v;$('mw2').className=v==120?'on':'';$('mw10').className=v==600?'on':'';$('mgx0').textContent=v==120?'2 min ago':'10 min ago';mdraw()}
+function mdraw(){if($('mg').hidden)return;
+ let now=Date.now(),t0=now-MWIN*1000,pts=MH.filter(p=>p.t>=t0),hp=null;
+ if(mhv!=null){let b=1e18;pts.forEach(p=>{let d=Math.abs(p.t-mhv);if(d<b){b=d;hp=p}})}
+ $('mgt').textContent=hp?ago(now-hp.t):'';
+ let acc=css('--bar'),rule=css('--line'),mut=css('--mut'),card=css('--card');
+ MP.forEach((P,i)=>{let c=$('mg'+i),w=c.clientWidth,h=c.clientHeight,dpr=window.devicePixelRatio||1;if(!w)return;
+  if(c.width!=Math.round(w*dpr)||c.height!=Math.round(h*dpr)){c.width=Math.round(w*dpr);c.height=Math.round(h*dpr)}
+  let x=c.getContext('2d');x.setTransform(dpr,0,0,dpr,0,0);x.clearRect(0,0,w,h);
+  let vals=pts.map(p=>p[P.k]).filter(v=>v!=null),lo,hi;
+  if(P.z){lo=0;hi=nice(Math.max(P.k=='rpm'?400:0.5,...vals)*1.05)}
+  else{let mn=vals.length?Math.min(...vals):11.5,mx=vals.length?Math.max(...vals):13.5,mid=(mn+mx)/2,sp=Math.max(2,(mx-mn)*1.2);lo=Math.floor((mid-sp/2)*2)/2;hi=Math.ceil((mid+sp/2)*2)/2}
+  let L=MGL,Rr=w-6,T=6,B=h-6,X=t=>L+(t-t0)/(MWIN*1000)*(Rr-L),Y=v=>B-(v-lo)/(hi-lo)*(B-T);
+  x.strokeStyle=rule;x.lineWidth=1;x.beginPath();[T,B].forEach(y=>{let yy=Math.round(y)+.5;x.moveTo(L,yy);x.lineTo(Rr,yy)});x.stroke();
+  x.fillStyle=mut;x.font='11px system-ui,sans-serif';x.textAlign='right';x.textBaseline='middle';x.fillText(tick(hi),L-6,T);x.fillText(tick(lo),L-6,B);
+  x.strokeStyle=acc;x.lineWidth=2;x.lineJoin='round';x.lineCap='round';x.beginPath();let pen=false;
+  pts.forEach(p=>{let v=p[P.k];if(v==null){pen=false;return}let px=X(p.t),py=Y(v);if(pen)x.lineTo(px,py);else x.moveTo(px,py);pen=true});x.stroke();
+  let last=null;for(let j=pts.length-1;j>=0;j--)if(pts[j][P.k]!=null){last=pts[j];break}
+  let d=hp||last;
+  if(hp){let hx=Math.round(X(hp.t))+.5;x.strokeStyle=mut;x.lineWidth=1;x.beginPath();x.moveTo(hx,T);x.lineTo(hx,B);x.stroke()}
+  if(d&&d[P.k]!=null){let px=X(d.t),py=Y(d[P.k]);x.fillStyle=card;x.beginPath();x.arc(px,py,6,0,7);x.fill();x.fillStyle=acc;x.beginPath();x.arc(px,py,4,0,7);x.fill()}
+  let v=d?d[P.k]:null,t='-';
+  if(v!=null){t=P.f(v)+' '+P.u;if(P.k=='rpm'&&d.set!=null)t+=' (asked '+Math.round(d.set)+')';if(P.k=='bus'&&d.vm!=null)t+=' · '+Math.round(v*d.vm)+' W'}
+  $('mv'+i).textContent=t})}
+function mhov(e){let r=e.currentTarget.getBoundingClientRect(),q=(e.clientX-r.left-MGL)/(r.width-6-MGL);mhv=q<0||q>1?null:Date.now()-MWIN*1000*(1-q);mdraw()}
+['mg0','mg1','mg2'].forEach(id=>{let c=$(id);c.onpointermove=mhov;c.onpointerdown=mhov;c.onpointerleave=()=>{mhv=null;mdraw()};c.onpointercancel=c.onpointerleave});
+function mtable(){if(!$('mtab').open)return;let tb=$('mtb'),now=Date.now(),last=null,k=0;tb.textContent='';
+ for(let j=MH.length-1;j>=0&&k<20;j--){let p=MH[j];if(last!=null&&last-p.t<15000)continue;last=p.t;k++;
+  let row=tb.insertRow();[ago(now-p.t),p.rpm==null?'-':Math.round(p.rpm),p.bus==null?'-':p.bus.toFixed(2),p.vm==null?'-':p.vm.toFixed(1)].forEach(c=>{row.insertCell().textContent=c})}}
+window.addEventListener('resize',mdraw);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState=='visible'&&MS&&MS.foc)mhist()});
 async function mf(q){let r=await fetch('/api/maxxfan?'+q);if(!r.ok)$('fan').innerHTML='<div class="m bad">'+esc(await r.text())+'</div>';u()}
 async function filled(){if(confirm('Tank filled: start counting from full?')){await fetch('/api/water',{method:'POST',body:new URLSearchParams({filled:1})});u()}}
 async function wifi(p){let r=await fetch('/api/wifi',{method:'POST',body:new URLSearchParams(p)});wm.textContent=r.ok?'':await r.text();u()}

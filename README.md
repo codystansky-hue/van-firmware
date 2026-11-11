@@ -5,7 +5,7 @@ ESP32 firmware for the van.
 | folder | what | state |
 |---|---|---|
 | [`maxxfan/`](maxxfan/README.md) ([flash handoff](maxxfan/FLASH_HANDOFF.md)) | MaxxFan BLDC retrofit: lid motor, fan (phone + knob; aqx board or the FOC board), Wi-Fi on Starlink, updates over Wi-Fi | v4, compiled, not run on the FOC board yet |
-| [`hub/`](hub/README.md) | van hub: Victron solar + SmartShunt, Renogy battery, water, MaxxFan on one page, http://van.local | v1, compiled, not flashed yet |
+| [`hub/`](hub/README.md) | van hub: Victron solar + SmartShunt, Renogy battery, water, MaxxFan (with its motor graph) on one page, http://van.local | v1.1, compiled, not flashed yet |
 | [`foc_test/`](foc_test/README.md) | bench test for the MaxxFan FOC board (MCF8316D): spin the motor from a USB serial console | v1, compiled, not run on hardware yet |
 | [`libraries/vannet/`](libraries/vannet/src/VanNet.h) | shared by both: Wi-Fi (router first, own hotspot as fallback), updates with rollback, passwords | |
 | [`libraries/mcf8316/`](libraries/mcf8316/src/FocMotor.h) | MCF8316D I2C driver and the FOC board's motor profile (from Minuet, MIT) | |
